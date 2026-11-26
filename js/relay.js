@@ -7,9 +7,9 @@
  * Large files are published as base64 chunks and reassembled by the recipient.
  */
 
-import * as db from './db.js?v=11';
-import { fromBase64 } from './crypto.js?v=11';
-import { getCloudConfig } from '../config.js?v=11';
+import * as db from './db.js?v=13';
+import { fromBase64 } from './crypto.js?v=13';
+import { getCloudConfig } from '../config.js?v=13';
 
 const ROOT = 'vanish-chat/v2';
 const KEEPALIVE = 60;
@@ -416,7 +416,8 @@ export async function cloudGetProfile(username) {
 }
 
 export async function cloudGetProfileById(id) {
-  return profiles.get(id) || { id, username: `User ${id.slice(0, 6)}`, salt: null, password_hash: null };
+  const profile = await waitForProfile(id);
+  return profile || { id, username: `User ${id.slice(0, 6)}`, salt: null, password_hash: null };
 }
 
 export async function cloudUpdateProfileHash(id, salt, hash) {
@@ -430,6 +431,21 @@ export function cloudFetchMessages() {
   const items = queue;
   queue = [];
   return items;
+}
+
+function messageMedia(message) {
+  if (!message) return [];
+  if (Array.isArray(message.attachments) && message.attachments.length) return message.attachments;
+  if (!message.mediaId) return [];
+  return [{
+    id: message.mediaId,
+    path: message.mediaPath,
+    chunks: message.mediaChunks,
+    name: message.mediaName,
+    mime: message.mediaMime,
+    size: message.mediaSize,
+    expiresAt: message.expiresAt,
+  }];
 }
 
 export async function cloudInsertMessage(message) {
@@ -450,6 +466,8 @@ export async function cloudInsertMessage(message) {
       media_name: message.mediaName || null,
       media_mime: message.mediaMime || null,
       media_size: message.mediaSize || null,
+      sender_name: message.senderName || null,
+      attachments: Array.isArray(message.attachments) ? message.attachments : [],
       created_at: new Date(message.createdAt).toISOString(),
       expires_at: new Date(message.expiresAt).toISOString(),
     }))
@@ -472,25 +490,24 @@ export async function cloudUploadMedia(id, blob, name, mime, recipientId, onProg
   return `relay:${id}:${total}`;
 }
 
-export async function cloudFetchMedia(message) {
-  const mediaId = message.mediaId;
+export async function cloudFetchMedia(attachment) {
+  const mediaId = attachment.id || attachment.mediaId;
   if (!mediaId) return false;
   const chunks = await db.getByIndex('chunks', 'by-media', mediaId);
   if (!chunks.length) return false;
-  const total = message.mediaChunks || chunks.length;
+  const total = attachment.chunks || attachment.mediaChunks || chunks.length;
   if (chunks.length < total) return false;
   chunks.sort((a, b) => a.part - b.part);
-  const blob = new Blob(chunks.map((chunk) => fromBase64(chunk.data)), {
-    type: message.mediaMime || 'application/octet-stream',
-  });
+  const mime = attachment.mime || attachment.mediaMime || 'application/octet-stream';
+  const blob = new Blob(chunks.map((chunk) => fromBase64(chunk.data)), { type: mime });
   await db.put('media', {
     id: mediaId,
     blob,
-    name: message.mediaName || 'media',
-    mime: message.mediaMime || blob.type,
+    name: attachment.name || attachment.mediaName || 'media',
+    mime,
     size: blob.size,
-    createdAt: message.createdAt,
-    expiresAt: message.expiresAt,
+    createdAt: attachment.createdAt || Date.now(),
+    expiresAt: attachment.expiresAt || Date.now() + 86400000,
   });
   for (const chunk of chunks) await db.del('chunks', chunk.id);
   notify();
@@ -504,10 +521,10 @@ export async function cloudDeleteMessage(message) {
   try {
     await publish(`${base}/msg/${message.id}`, empty);
   } catch (ignored) { /* best effort */ }
-  if (message.mediaChunks) {
-    for (let part = 0; part < message.mediaChunks; part++) {
+  for (const attachment of messageMedia(message)) {
+    for (let part = 0; part < (attachment.chunks || attachment.mediaChunks || 0); part++) {
       try {
-        await publish(`${base}/chunk/${message.mediaId}/${part}`, empty);
+        await publish(`${base}/chunk/${attachment.id}/${part}`, empty);
       } catch (ignored) { /* best effort */ }
     }
   }

@@ -1,10 +1,11 @@
-import * as db from './db.js?v=11';
-import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=11';
-import * as cloud from './backend.js?v=11';
-import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=11';
+import * as db from './db.js?v=13';
+import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=13';
+import * as cloud from './backend.js?v=13';
+import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=13';
 
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_MEDIA_BYTES = 500 * 1024 * 1024;
+const MAX_ATTACHMENTS = 10;
 const MAX_EMBED_BYTES = 25 * 1024 * 1024;
 const SESSION_KEY = 'vanish-chat.session';
 
@@ -16,8 +17,7 @@ const state = {
   messages: [],
   selectedChatId: null,
   search: '',
-  attachment: null,
-  previewUrl: '',
+  attachments: [],
   mediaUrls: new Map(),
   polling: false,
   purging: false,
@@ -131,10 +131,56 @@ function peerOf(chat) {
   return chat.participants.find((id) => id !== identity()) || '';
 }
 
+function isPlaceholderName(name, id) {
+  return !name || name === `User ${String(id || '').slice(0, 6)}`;
+}
+
+function rememberPeerName(chat, name) {
+  if (!chat || isPlaceholderName(name, peerOf(chat))) return false;
+  if (chat.peerName === name) return false;
+  chat.peerName = name;
+  return true;
+}
+
 function displayPeerName(chat) {
   const peerId = peerOf(chat);
+  if (!isPlaceholderName(chat.peerName, peerId)) return chat.peerName;
   const local = state.accounts.find((account) => account.id === peerId || account.cloudId === peerId);
-  return local ? local.username : (chat.peerName || `User ${peerId.slice(0, 6)}`);
+  return local && local.username ? local.username : (chat.peerName || `User ${peerId.slice(0, 6)}`);
+}
+
+function normalizeAttachment(item, message) {
+  const data = item || {};
+  const id = data.id || data.media_id;
+  if (!id) return null;
+  const mime = data.mime || data.media_mime || 'application/octet-stream';
+  return {
+    id,
+    path: data.path || data.media_path || null,
+    chunks: Number(data.chunks || data.media_chunks) || 0,
+    name: data.name || data.media_name || 'media',
+    mime,
+    size: Number(data.size || data.media_size) || 0,
+    type: data.type || (String(mime).indexOf('video/') === 0 ? 'video' : 'image'),
+    createdAt: data.createdAt || (message && message.createdAt) || Date.now(),
+    expiresAt: data.expiresAt || (message && message.expiresAt) || Date.now() + RETENTION_MS,
+  };
+}
+
+function messageMedia(message) {
+  if (!message) return [];
+  if (Array.isArray(message.attachments) && message.attachments.length) {
+    return message.attachments.map((item) => normalizeAttachment(item, message)).filter(Boolean);
+  }
+  if (!message.mediaId) return [];
+  return [normalizeAttachment({
+    id: message.mediaId,
+    path: message.mediaPath,
+    chunks: message.mediaChunks,
+    name: message.mediaName,
+    mime: message.mediaMime,
+    size: message.mediaSize,
+  }, message)].filter(Boolean);
 }
 
 function normalizeUsername(value) {
@@ -310,8 +356,7 @@ function logout() {
   state.chats = [];
   state.messages = [];
   state.selectedChatId = null;
-  state.attachment = null;
-  clearPreview();
+  clearAttachments();
   revokeMediaUrls();
   closeModal();
   history.replaceState(null, '', location.href);
@@ -415,7 +460,7 @@ async function renderStorageInfo() {
 function renderChatList() {
   const list = el('chat-list');
   const chats = state.chats.filter((chat) =>
-    !state.search || (chat.peerName || '').toLowerCase().includes(state.search)
+    !state.search || displayPeerName(chat).toLowerCase().includes(state.search)
   );
 
   if (!chats.length) {
@@ -431,8 +476,13 @@ function renderChatList() {
     const last = chatMessages[chatMessages.length - 1];
     let preview = 'No messages yet';
     if (last) {
-      if (last.type === 'image') preview = '📷 Photo';
-      else if (last.type === 'video') preview = '🎬 Video';
+      const attachments = messageMedia(last);
+      const photos = attachments.filter((a) => a.type !== 'video').length;
+      const videos = attachments.length - photos;
+      const parts = [];
+      if (photos) parts.push(`📷 ${photos} photo${photos === 1 ? '' : 's'}`);
+      if (videos) parts.push(`🎬 ${videos} video${videos === 1 ? '' : 's'}`);
+      if (parts.length) preview = parts.join(', ');
       else preview = last.text || 'Message';
     }
     return `
@@ -487,7 +537,7 @@ async function renderChat() {
   decorateAvatar(el('peer-avatar'), peerName);
 
   const messages = state.messages.filter((m) => m.chatId === chat.id);
-  const signature = [identity(), ...messages.map((m) => m.id)].join('|');
+  const signature = [identity(), ...messages.map((m) => [m.id, messageMedia(m).map((a) => a.id).join(',')].join(':'))].join('|');
   if (signature === messageSignature) {
     updateCountdowns();
     return;
@@ -497,18 +547,19 @@ async function renderChat() {
 
   const rows = await Promise.all(messages.map(async (message) => {
     const mine = message.senderId === identity();
+    const attachments = messageMedia(message);
     let mediaHtml = '';
-    if (message.mediaId) {
-      const media = await db.get('media', message.mediaId);
+    for (const attachment of attachments) {
+      const media = await db.get('media', attachment.id);
       if (media) {
         const url = URL.createObjectURL(media.blob);
-        state.mediaUrls.set(message.mediaId, url);
-        const tag = message.type === 'video'
+        state.mediaUrls.set(attachment.id, url);
+        const tag = attachment.type === 'video'
           ? `<video src="${url}" controls playsinline></video>`
-          : `<img src="${url}" alt="${escapeHtml(message.mediaName || 'image')}">`;
-        mediaHtml = `<div class="bubble-media">${tag}</div>`;
+          : `<img src="${url}" alt="${escapeHtml(attachment.name)}">`;
+        mediaHtml += `<div class="bubble-media"><div class="bubble-media-item">${tag}<button class="download-btn" data-download="${escapeHtml(message.id)}" data-media-id="${escapeHtml(attachment.id)}">Download</button></div></div>`;
       } else {
-        mediaHtml = '<div class="media-missing">Media expired or unavailable</div>';
+        mediaHtml += `<div class="media-missing">${escapeHtml(attachment.name)} — media expired or unavailable</div>`;
       }
     }
     return `
@@ -517,7 +568,6 @@ async function renderChat() {
           ${mediaHtml}
           ${message.text ? `<div class="bubble-text">${escapeHtml(message.text)}</div>` : ''}
           <div class="bubble-foot">
-            ${message.mediaId ? `<button class="download-btn" data-download="${escapeHtml(message.id)}">Download</button>` : ''}
             <span class="expiry-chip ${message.expiresAt - Date.now() < 3600000 ? 'urgent' : ''}" data-expiry="${message.expiresAt}">${countdown(message.expiresAt)}</span>
             <span class="msg-time">${formatTime(message.createdAt)}</span>
           </div>
@@ -551,8 +601,6 @@ function openModal(html) {
 
 function closeModal() {
   el('modal-root').innerHTML = '';
-  if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
-  state.previewUrl = '';
 }
 
 function openNewChatModal() {
@@ -616,107 +664,182 @@ async function startChatWith(rawUsername) {
   renderAll();
 }
 
-function clearPreview() {
-  if (state.previewUrl) URL.revokeObjectURL(state.previewUrl);
-  state.previewUrl = '';
-  state.attachment = null;
-  el('attachment-preview').innerHTML = '';
-  el('attachment-preview').classList.add('hidden');
-  if (el('upload-progress')) {
-    el('upload-progress').classList.add('hidden');
+function clearAttachments() {
+  for (const item of state.attachments) {
+    if (item.url) URL.revokeObjectURL(item.url);
+  }
+  state.attachments = [];
+  const preview = el('attachment-preview');
+  if (preview) {
+    preview.innerHTML = '';
+    preview.classList.add('hidden');
+  }
+  const progress = el('upload-progress');
+  if (progress) {
+    progress.classList.add('hidden');
     el('upload-bar').style.width = '0%';
     el('upload-label').textContent = '';
   }
 }
 
-function handleFileSelected(event) {
-  const files = event.target.files;
-  const file = files && files[0];
-  event.target.value = '';
-  if (!file) return;
-  if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
-    return toast('Please choose an image or a video.', 'error');
-  }
-  if (file.size > MAX_MEDIA_BYTES) {
-    return toast(`Files must be under ${formatBytes(MAX_MEDIA_BYTES)}.`, 'error');
-  }
-  if (file.size > 100 * 1024 * 1024) {
-    toast('Large file selected — sending may take a few minutes. Keep this tab open.', 'info');
-  }
-  clearPreview();
-  state.attachment = file;
-  state.previewUrl = URL.createObjectURL(file);
+function renderAttachmentPreview() {
   const preview = el('attachment-preview');
-  preview.innerHTML = file.type.startsWith('video/')
-    ? `<video src="${state.previewUrl}" controls></video><button type="button" class="remove-attachment" data-action="remove-attachment">×</button>`
-    : `<img src="${state.previewUrl}" alt="Attachment preview"><button type="button" class="remove-attachment" data-action="remove-attachment">×</button>`;
+  if (!preview) return;
+  if (!state.attachments.length) {
+    preview.innerHTML = '';
+    preview.classList.add('hidden');
+    return;
+  }
+  preview.innerHTML = state.attachments.map((item, index) => {
+    const tag = item.type === 'video'
+      ? `<video src="${item.url}" controls muted playsinline></video>`
+      : `<img src="${item.url}" alt="${escapeHtml(item.name)}">`;
+    return `<div class="attachment-thumb">${tag}<button type="button" class="remove-attachment" data-action="remove-attachment" data-index="${index}" aria-label="Remove ${escapeHtml(item.name)}">×</button></div>`;
+  }).join('');
   preview.classList.remove('hidden');
+}
+
+function handleFileSelected(event) {
+  const picked = event.target.files;
+  const files = [];
+  for (let i = 0; i < (picked ? picked.length : 0); i++) files.push(picked[i]);
+  event.target.value = '';
+  if (!files.length) return;
+
+  let large = false;
+  let rejected = 0;
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    if (state.attachments.length >= MAX_ATTACHMENTS) {
+      rejected++;
+      continue;
+    }
+    if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
+      rejected++;
+      continue;
+    }
+    if (file.size > MAX_MEDIA_BYTES) {
+      rejected++;
+      continue;
+    }
+    if (file.size > 100 * 1024 * 1024) large = true;
+    state.attachments.push({
+      id: uuid(),
+      file,
+      url: URL.createObjectURL(file),
+      name: file.name,
+      mime: file.type,
+      size: file.size,
+      type: file.type.startsWith('video/') ? 'video' : 'image',
+    });
+  }
+  if (rejected) {
+    toast(`${rejected} file${rejected === 1 ? '' : 's'} skipped. Use images/videos under ${formatBytes(MAX_MEDIA_BYTES)} (max ${MAX_ATTACHMENTS}).`, 'error');
+  }
+  if (large) {
+    toast('Large files selected — sending may take a few minutes. Keep this tab open.', 'info');
+  }
+  renderAttachmentPreview();
+}
+
+async function cleanupFailedSend(items, uploaded) {
+  for (const item of items) {
+    try { await db.del('media', item.id); } catch (ignored) { /* nothing stored */ }
+  }
+  for (const attachment of uploaded) {
+    try { await cloud.cloudDeleteMedia(attachment); } catch (ignored) { /* best effort */ }
+  }
 }
 
 async function handleSend(event) {
   event.preventDefault();
   if (!state.selectedChatId) return;
   const text = el('message-input').value.trim();
-  const file = state.attachment;
-  if (!text && !file) return;
+  const files = state.attachments.slice();
+  if (!text && !files.length) return;
 
   const button = el('btn-send');
   button.disabled = true;
+  const uploaded = [];
   try {
     const chat = state.chats.find((c) => c.id === state.selectedChatId);
     if (!chat) throw new Error('Chat not found.');
 
     const now = Date.now();
+    const expiresAt = now + RETENTION_MS;
+    const attachments = files.map((item) => ({
+      id: item.id,
+      type: item.type,
+      name: item.name,
+      mime: item.mime,
+      size: item.size,
+      path: null,
+      chunks: 0,
+    }));
+    const first = attachments[0] || null;
     const message = {
       id: uuid(),
       chatId: chat.id,
       senderId: identity(),
       recipientId: peerOf(chat),
-      type: file ? (file.type.startsWith('video/') ? 'video' : 'image') : 'text',
+      type: first ? first.type : 'text',
       text,
-      mediaId: file ? uuid() : null,
+      attachments,
+      mediaId: first ? first.id : null,
       mediaPath: null,
-      mediaName: file ? file.name : null,
-      mediaMime: file ? file.type : null,
-      mediaSize: file ? file.size : null,
+      mediaName: first ? first.name : null,
+      mediaMime: first ? first.mime : null,
+      mediaSize: first ? first.size : null,
       mediaChunks: 0,
+      senderName: state.currentUser ? state.currentUser.username : '',
       createdAt: now,
-      expiresAt: now + RETENTION_MS,
+      expiresAt,
       remote: false,
     };
 
-    if (file) {
+    for (let i = 0; i < files.length; i++) {
+      const item = files[i];
       await db.put('media', {
-        id: message.mediaId,
-        blob: file,
-        name: file.name,
-        mime: file.type,
-        size: file.size,
+        id: item.id,
+        blob: item.file,
+        name: item.name,
+        mime: item.mime,
+        size: item.size,
         createdAt: now,
-        expiresAt: message.expiresAt,
+        expiresAt,
       });
-      if (cloud.cloudEnabled()) {
+    }
+
+    if (cloud.cloudEnabled() && attachments.length) {
+      const progress = el('upload-progress');
+      if (progress) progress.classList.remove('hidden');
+      for (let i = 0; i < files.length; i++) {
+        const item = files[i];
+        const attachment = attachments[i];
         try {
-          const progress = el('upload-progress');
-          if (progress) progress.classList.remove('hidden');
-          message.mediaPath = await cloud.cloudUploadMedia(
-            message.mediaId,
-            file,
-            file.name,
-            file.type,
+          attachment.path = await cloud.cloudUploadMedia(
+            attachment.id,
+            item.file,
+            item.name,
+            item.mime,
             message.recipientId,
             (part, total) => {
               if (!el('upload-bar')) return;
-              const percent = Math.round((part / total) * 100);
+              const filePercent = part / total;
+              const percent = Math.round(((i + filePercent) / files.length) * 100);
               el('upload-bar').style.width = `${percent}%`;
-              el('upload-label').textContent = `Uploading ${formatBytes(file.size)} — ${percent}% (${part}/${total} parts)`;
+              el('upload-label').textContent = `Uploading ${i + 1}/${files.length}: ${item.name} — ${Math.round(filePercent * 100)}%`;
             }
           );
-          const parts = message.mediaPath.split(':');
-          message.mediaChunks = Number(parts[parts.length - 1]) || 1;
+          const parts = attachment.path.split(':');
+          attachment.chunks = Number(parts[parts.length - 1]) || 1;
+          uploaded.push(attachment);
+          if (i === 0) {
+            message.mediaPath = attachment.path;
+            message.mediaChunks = attachment.chunks;
+          }
         } catch (error) {
-          await db.del('media', message.mediaId);
-          throw new Error(`Upload failed: ${error.message}`);
+          throw new Error(`Upload failed for ${item.name}: ${error.message}`);
         }
       }
     }
@@ -729,11 +852,12 @@ async function handleSend(event) {
     await db.put('chats', Object.assign({}, chat, { updatedAt: now }));
 
     el('message-input').value = '';
-    clearPreview();
+    clearAttachments();
     await loadData();
     renderAll();
     renderStorageInfo();
   } catch (error) {
+    await cleanupFailedSend(files, uploaded);
     toast(error.message || 'Could not send the message.', 'error');
   } finally {
     button.disabled = false;
@@ -780,11 +904,17 @@ async function pollCloud() {
 
     for (const server of serverChats) {
       const local = await db.get('chats', server.id);
-      if (local && local.updatedAt >= server.updatedAt) continue;
       const peerId = server.participants.find((id) => id !== me) || '';
-      await db.put('chats', Object.assign({}, server, {
-        peerName: (local && local.peerName) || (await resolvePeerName(peerId)),
-      }));
+      if (local && local.updatedAt >= server.updatedAt && !isPlaceholderName(local.peerName, peerId)) continue;
+      let peerName = server.peerName || '';
+      if (isPlaceholderName(peerName, peerId)) peerName = await resolvePeerName(peerId);
+      const merged = Object.assign({}, server, { peerName });
+      if (!local || !local.peerName || isPlaceholderName(local.peerName, peerId)) {
+        merged.peerName = peerName;
+      } else {
+        merged.peerName = local.peerName;
+      }
+      await db.put('chats', merged);
       changed = true;
     }
 
@@ -792,10 +922,10 @@ async function pollCloud() {
       if (row.__deleted) {
         const local = await db.get('messages', row.id);
         if (local) {
-          if (local.mediaId) {
-            const remaining = await db.getByIndex('chunks', 'by-media', local.mediaId);
+          for (const attachment of messageMedia(local)) {
+            const remaining = await db.getByIndex('chunks', 'by-media', attachment.id);
             for (const chunk of remaining) await db.del('chunks', chunk.id);
-            await db.del('media', local.mediaId);
+            await db.del('media', attachment.id);
           }
           await db.del('messages', local.id);
           changed = true;
@@ -803,20 +933,36 @@ async function pollCloud() {
         continue;
       }
 
-      if (await db.get('messages', row.id)) continue;
+      const peerId = row.sender_id === me ? row.recipient_id : row.sender_id;
       let chat = await db.get('chats', row.chat_id);
+      const incomingName = peerId === row.sender_id ? row.sender_name : null;
+      let peerName = incomingName || (chat && !isPlaceholderName(chat.peerName, peerId) ? chat.peerName : '');
+      if (isPlaceholderName(peerName, peerId)) peerName = await resolvePeerName(peerId);
       if (!chat) {
-        const peerId = row.sender_id === me ? row.recipient_id : row.sender_id;
         chat = {
           id: row.chat_id,
           participants: [me, peerId],
-          peerName: await resolvePeerName(peerId),
+          peerName,
           createdAt: Date.now(),
           updatedAt: Date.now(),
         };
         await db.put('chats', chat);
+        changed = true;
+      } else if (rememberPeerName(chat, peerName)) {
+        await db.put('chats', chat);
+        changed = true;
       }
 
+      if (await db.get('messages', row.id)) continue;
+
+      let rawAttachments = row.attachments;
+      if (typeof rawAttachments === 'string') {
+        try { rawAttachments = JSON.parse(rawAttachments); } catch (ignored) { rawAttachments = []; }
+      }
+      const attachments = Array.isArray(rawAttachments)
+        ? rawAttachments.map((item) => normalizeAttachment(item, row)).filter(Boolean)
+        : [];
+      const first = attachments[0] || null;
       const message = {
         id: row.id,
         chatId: row.chat_id,
@@ -824,12 +970,14 @@ async function pollCloud() {
         recipientId: row.recipient_id,
         type: row.kind || 'text',
         text: row.body || '',
-        mediaId: row.media_id || null,
-        mediaPath: row.media_path || null,
-        mediaChunks: row.media_chunks || 0,
-        mediaName: row.media_name || null,
-        mediaMime: row.media_mime || null,
-        mediaSize: row.media_size || null,
+        attachments,
+        mediaId: row.media_id || (first ? first.id : null),
+        mediaPath: row.media_path || (first ? first.path : null),
+        mediaChunks: row.media_chunks || (first ? first.chunks : 0),
+        mediaName: row.media_name || (first ? first.name : null),
+        mediaMime: row.media_mime || (first ? first.mime : null),
+        mediaSize: row.media_size || (first ? first.size : null),
+        senderName: row.sender_name || '',
         createdAt: Date.parse(row.created_at) || Date.now(),
         expiresAt: Date.parse(row.expires_at) || Date.now() + RETENTION_MS,
         remote: true,
@@ -841,8 +989,10 @@ async function pollCloud() {
     // Chunks can arrive after the message; retry assembly every poll.
     const locals = await db.getAll('messages');
     for (const message of locals) {
-      if (message.mediaId && !(await db.get('media', message.mediaId))) {
-        await fetchCloudMedia(message);
+      for (const attachment of messageMedia(message)) {
+        if (!(await db.get('media', attachment.id))) {
+          await fetchCloudMedia(message, attachment);
+        }
       }
     }
 
@@ -858,9 +1008,9 @@ async function pollCloud() {
   }
 }
 
-async function fetchCloudMedia(message) {
+async function fetchCloudMedia(message, attachment) {
   try {
-    const done = await cloud.cloudFetchMedia(message);
+    const done = await cloud.cloudFetchMedia(attachment || messageMedia(message)[0] || message);
     if (done) {
       forceMessageRender();
       renderChat();
@@ -896,16 +1046,19 @@ function blobToDataUrl(blob) {
   });
 }
 
-async function downloadMessage(id) {
+async function downloadMessage(id, mediaId) {
   const message = state.messages.find((m) => m.id === id);
   if (!message) return;
-  if (message.mediaId) {
-    let media = await db.get('media', message.mediaId);
-    if (!media && message.mediaPath && cloud.cloudEnabled()) {
-      await fetchCloudMedia(message);
-      media = await db.get('media', message.mediaId);
+  const attachments = messageMedia(message);
+  if (attachments.length) {
+    const chosen = mediaId ? attachments.find((a) => a.id === mediaId) : attachments[0];
+    if (!chosen) return;
+    let media = await db.get('media', chosen.id);
+    if (!media && chosen.path && cloud.cloudEnabled()) {
+      await fetchCloudMedia(message, chosen);
+      media = await db.get('media', chosen.id);
     }
-    if (media) return downloadBlob(media.blob, media.name || 'media');
+    if (media) return downloadBlob(media.blob, media.name || chosen.name || 'media');
     toast('Media is no longer available.', 'error');
     return;
   }
@@ -918,7 +1071,8 @@ async function exportData(chatIds, label) {
   try {
     const chats = state.chats.filter((chat) => chatIds.includes(chat.id));
     const messages = state.messages.filter((message) => chatIds.includes(message.chatId));
-    const totalMedia = messages.reduce((sum, message) => sum + (message.mediaSize || 0), 0);
+    const totalMedia = messages.reduce((sum, message) =>
+      sum + messageMedia(message).reduce((partSum, attachment) => partSum + (attachment.size || 0), 0), 0);
     const embedMedia = totalMedia <= MAX_EMBED_BYTES;
 
     const payload = {
@@ -930,30 +1084,43 @@ async function exportData(chatIds, label) {
         : `Media was too large (${formatBytes(totalMedia)}) to embed. Download individual files before they expire.`,
       chats: chats.map((chat) => ({
         id: chat.id,
-        peer: chat.peerName || peerOf(chat),
+        peer: displayPeerName(chat),
         createdAt: new Date(chat.createdAt).toISOString(),
       })),
       messages: [],
     };
 
     for (const message of messages) {
+      const chat = chats.find((c) => c.id === message.chatId);
       const entry = {
         id: message.id,
         chatId: message.chatId,
-        from: message.senderId === identity() ? 'me' : (message.peerName || message.senderId),
+        from: message.senderId === identity()
+          ? 'me'
+          : (chat ? displayPeerName(chat) : (message.senderName || message.senderId)),
         type: message.type,
         text: message.text,
         createdAt: new Date(message.createdAt).toISOString(),
         expiresAt: new Date(message.expiresAt).toISOString(),
+        attachments: [],
         mediaName: message.mediaName || null,
       };
-      if (message.mediaId && embedMedia) {
-        const media = await db.get('media', message.mediaId);
-        if (media) {
-          entry.mediaData = await blobToDataUrl(media.blob);
-        } else {
-          entry.mediaNote = 'Media no longer available locally.';
+      for (const attachment of messageMedia(message)) {
+        const item = {
+          id: attachment.id,
+          name: attachment.name,
+          mime: attachment.mime,
+          size: attachment.size,
+        };
+        if (embedMedia) {
+          const media = await db.get('media', attachment.id);
+          if (media) {
+            item.data = await blobToDataUrl(media.blob);
+          } else {
+            item.note = 'Media no longer available locally.';
+          }
         }
+        entry.attachments.push(item);
       }
       payload.messages.push(entry);
     }
@@ -973,7 +1140,7 @@ async function exportData(chatIds, label) {
 function exportCurrentChat() {
   if (!state.selectedChatId) return;
   const chat = state.chats.find((c) => c.id === state.selectedChatId);
-  exportData([state.selectedChatId], (chat && chat.peerName) || 'chat');
+  exportData([state.selectedChatId], chat ? displayPeerName(chat) : 'chat');
 }
 
 /* ---------------- Settings modal ---------------- */
@@ -1066,7 +1233,7 @@ async function changePassword() {
 function handleGlobalClick(event) {
   const download = event.target.closest('[data-download]');
   if (download) {
-    downloadMessage(download.dataset.download);
+    downloadMessage(download.dataset.download, download.dataset.mediaId);
     return;
   }
 
@@ -1081,7 +1248,11 @@ function handleGlobalClick(event) {
     if (actionNode.classList.contains('modal-backdrop') && event.target !== actionNode) return;
     closeModal();
   } else if (action === 'remove-attachment') {
-    clearPreview();
+    const index = Number(actionNode.dataset.index);
+    const item = state.attachments[index];
+    if (item && item.url) URL.revokeObjectURL(item.url);
+    state.attachments.splice(index, 1);
+    renderAttachmentPreview();
   } else if (action === 'new-chat-submit') {
     const newChatInput = el('new-chat-username');
     startChatWith(newChatInput ? newChatInput.value : '');

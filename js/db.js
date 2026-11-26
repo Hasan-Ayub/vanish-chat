@@ -85,8 +85,18 @@ export async function purgeExpired(now = Date.now()) {
     getAll('chunks'),
   ]);
   const expiredMessages = messages.filter((m) => m.expiresAt <= now);
+  const messageMediaIds = [];
+  for (const message of expiredMessages) {
+    if (Array.isArray(message.attachments)) {
+      for (const attachment of message.attachments) {
+        if (attachment && attachment.id) messageMediaIds.push(attachment.id);
+      }
+    } else if (message.mediaId) {
+      messageMediaIds.push(message.mediaId);
+    }
+  }
   const mediaIds = new Set([
-    ...expiredMessages.filter((m) => m.mediaId).map((m) => m.mediaId),
+    ...messageMediaIds,
     ...media.filter((item) => item.expiresAt <= now).map((item) => item.id),
   ]);
   const chunkIds = new Set([

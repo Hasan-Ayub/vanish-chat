@@ -10,9 +10,9 @@
  * preserved while the bytes themselves live on the server.
  */
 
-import * as db from './db.js?v=11';
-import { uuid } from './crypto.js?v=11';
-import { getCloudConfig } from '../config.js?v=11';
+import * as db from './db.js?v=13';
+import { uuid } from './crypto.js?v=13';
+import { getCloudConfig } from '../config.js?v=13';
 
 const CHUNK_SIZE = 1024 * 1024;
 
@@ -93,6 +93,21 @@ async function request(path, options = {}) {
 const jsonHeaders = { 'Content-Type': 'application/json' };
 const first = (rows) => (Array.isArray(rows) ? rows[0] : rows);
 
+function messageMedia(message) {
+  if (!message) return [];
+  if (Array.isArray(message.attachments) && message.attachments.length) return message.attachments;
+  if (!message.mediaId) return [];
+  return [{
+    id: message.mediaId,
+    path: message.mediaPath,
+    chunks: message.mediaChunks,
+    name: message.mediaName,
+    mime: message.mediaMime,
+    size: message.mediaSize,
+    expiresAt: message.expiresAt,
+  }];
+}
+
 /* ---------------- accounts ---------------- */
 
 export async function cloudCreateProfile({ username, salt, hash }) {
@@ -139,6 +154,7 @@ export async function cloudUpsertChat(chat) {
       id: chat.id,
       user_1,
       user_2,
+      peer_name: chat.peerName || null,
       created_at: new Date(chat.createdAt || Date.now()).toISOString(),
       updated_at: new Date(chat.updatedAt || Date.now()).toISOString(),
     }),
@@ -153,7 +169,7 @@ export async function cloudFetchChats() {
   return (Array.isArray(rows) ? rows : []).map((row) => ({
     id: row.id,
     participants: [row.user_1, row.user_2],
-    peerName: '',
+    peerName: row.peer_name || '',
     createdAt: Date.parse(row.created_at) || Date.now(),
     updatedAt: Date.parse(row.updated_at) || Date.now(),
   }));
@@ -192,6 +208,8 @@ export async function cloudInsertMessage(message) {
       media_name: message.mediaName || null,
       media_mime: message.mediaMime || null,
       media_size: message.mediaSize || null,
+      sender_name: message.senderName || null,
+      attachments: JSON.stringify(Array.isArray(message.attachments) ? message.attachments : []),
       created_at: new Date(message.createdAt).toISOString(),
       expires_at: new Date(message.expiresAt).toISOString(),
     }),
@@ -201,8 +219,10 @@ export async function cloudInsertMessage(message) {
 
 export async function cloudDeleteMessage(message) {
   if (!message || !message.id) return;
-  if (message.mediaPath && message.mediaPath.startsWith('supabase:')) {
-    await cloudDeleteMedia(message);
+  for (const attachment of messageMedia(message)) {
+    if (attachment.path && String(attachment.path).indexOf('supabase:') === 0) {
+      await cloudDeleteMedia(attachment);
+    }
   }
   try {
     await request(`/rest/v1/messages?id=eq.${encodeURIComponent(message.id)}`, { method: 'DELETE' });
@@ -214,7 +234,8 @@ export async function cloudDeleteMessage(message) {
 /* ---------------- media ---------------- */
 
 function mediaParts(message) {
-  const parts = String((message && message.mediaPath) || '').split(':');
+  const path = message ? (message.path || message.mediaPath) : '';
+  const parts = String(path || '').split(':');
   if (parts[0] !== 'supabase' || parts.length < 4) return null;
   const total = Number(parts[parts.length - 1]);
   return { owner: parts[1], id: parts[2], total: Number.isFinite(total) && total > 0 ? total : 0 };
@@ -241,10 +262,12 @@ export async function cloudUploadMedia(id, blob, name, mime, recipientId, onProg
   return `supabase:${owner}:${id}:${total}`;
 }
 
-export async function cloudFetchMedia(message) {
+export async function cloudFetchMedia(attachment) {
   if (!cloudEnabled()) return false;
-  const info = mediaParts(message);
+  const info = mediaParts(attachment);
   if (!info || !info.total) return false;
+  const mediaId = attachment.id || attachment.mediaId;
+  if (!mediaId) return false;
 
   const chunks = [];
   for (let part = 0; part < info.total; part++) {
@@ -254,15 +277,16 @@ export async function cloudFetchMedia(message) {
     chunks.push(await response.blob());
   }
 
-  const blob = new Blob(chunks, { type: message.mediaMime || 'application/octet-stream' });
+  const mime = attachment.mime || attachment.mediaMime || 'application/octet-stream';
+  const blob = new Blob(chunks, { type: mime });
   await db.put('media', {
-    id: message.mediaId,
+    id: mediaId,
     blob,
-    name: message.mediaName || 'media',
-    mime: message.mediaMime || blob.type,
+    name: attachment.name || attachment.mediaName || 'media',
+    mime,
     size: blob.size,
-    createdAt: message.createdAt,
-    expiresAt: message.expiresAt,
+    createdAt: attachment.createdAt || Date.now(),
+    expiresAt: attachment.expiresAt || Date.now() + 86400000,
   });
   notify();
   return true;

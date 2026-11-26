@@ -17,6 +17,7 @@ create table if not exists public.chats (
   id text primary key,
   user_1 uuid not null references public.profiles(id) on delete cascade,
   user_2 uuid not null references public.profiles(id) on delete cascade,
+  peer_name text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   check (user_1 <> user_2)
@@ -39,11 +40,16 @@ create table if not exists public.messages (
   media_name text,
   media_mime text,
   media_size bigint,
+  sender_name text,
+  attachments jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(),
   expires_at timestamptz not null
 );
 
 -- Upgrade tables created by the older optional schema.
+alter table public.chats add column if not exists peer_name text;
+alter table public.messages add column if not exists sender_name text;
+alter table public.messages add column if not exists attachments jsonb not null default '[]'::jsonb;
 alter table public.messages add column if not exists media_id text;
 alter table public.messages add column if not exists media_path text;
 alter table public.messages add column if not exists media_chunks integer not null default 0;

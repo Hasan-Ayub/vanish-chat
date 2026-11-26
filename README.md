@@ -7,7 +7,7 @@ A messaging web app where every message, image and video is **permanently delete
 - Username + password accounts that work on **every device** when Supabase is configured
 - Stay signed in on a device until you explicitly log out
 - Server-side accounts, chats, messages and media (Supabase), with a zero-setup MQTT relay fallback
-- Images and videos up to **500 MB** per file (split into chunks and reassembled by the recipient)
+- Send up to **10 images/videos at once**, each up to **500 MB** (split into chunks and reassembled by the recipient)
 - Automatic 24-hour deletion, live countdowns and upload progress
 - Download individual files or export a whole chat before expiry
 - iPhone-inspired liquid glass UI for phones, tablets and desktops
@@ -22,7 +22,7 @@ GitHub Pages only serves static files — it **cannot host a database**. To have
 ## Set up the server database (required for shared accounts)
 
 1. Create a free project at [supabase.com](https://supabase.com/).
-2. Open **SQL Editor** and paste the entire contents of [`supabase/schema.sql`](supabase/schema.sql). Run it once. This creates `profiles`, `chats`, `messages`, the public `media` storage bucket, and row-level security policies.
+2. Open **SQL Editor** and paste the entire contents of [`supabase/schema.sql`](supabase/schema.sql). Run it once. If you ran an older version, run it again — it safely adds the newer `peer_name`, `sender_name`, and `attachments` columns. This creates `profiles`, `chats`, `messages`, the public `media` storage bucket, and row-level security policies.
 3. Open **Project Settings → API**. Copy the **Project URL** and the **anon / public key**.
 4. Paste both values into [`config.js`](config.js):
 
@@ -77,7 +77,7 @@ If no Supabase URL/key is present, the app falls back to the older zero-setup pu
 
 ## Limits and security notes
 
-- **Per file:** 500 MB. Very large files are slow because they travel as many chunks — keep the tab open while sending.
+- **Per file:** 500 MB, up to 10 files per message. Very large files are slow because they travel as many chunks — keep the tab open while sending.
 - The Supabase **anon key is public by design**; RLS is what restricts data access. Before production use, review the policies in `supabase/schema.sql`.
 - Password hashes are readable by the anon role because client-side sign-in needs them to verify a password on a new device. They are salted and PBKDF2-hardened (210,000 iterations), but they are still sensitive data — use a strong, unique password. For a production app, move login to Supabase Auth so the browser never sees a hash.
 - The `media` bucket is public so recipients can fetch files without signed URLs. Object IDs are random UUIDs, but anyone with a full URL can read the object until it is deleted.
