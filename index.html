@@ -7,7 +7,7 @@
   <meta name="description" content="Vanish Chat — private messaging where every message disappears after 24 hours.">
   <title>Vanish Chat</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2300a884'/%3E%3Cpath d='M33 8 18 36h12l-4 20 20-30H34z' fill='white'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css?v=9">
+  <link rel="stylesheet" href="./styles.css?v=11">
 </head>
 <body>
   <!-- AUTH -->
@@ -170,8 +170,32 @@
         if (button) setAuthTab(button.getAttribute('data-auth-tab'));
       });
       setAuthTab(window.__vanishAuthTab || 'login');
+
+      // Never let the form do a native reload while the app module is loading.
+      var authForm = document.getElementById('auth-form');
+      if (authForm) {
+        authForm.addEventListener('submit', function (event) {
+          event.preventDefault();
+          if (typeof window.vanishChatAuthSubmit === 'function') {
+            window.vanishChatAuthSubmit(event);
+            return;
+          }
+          window.__vanishPendingAuthSubmit = true;
+          var errorBox = document.getElementById('auth-error');
+          if (errorBox) errorBox.textContent = 'Starting app… please tap again in a moment.';
+        });
+      }
+
+      window.vanishChatFlushAuth = function () {
+        if (!window.__vanishPendingAuthSubmit) return;
+        if (typeof window.vanishChatAuthSubmit !== 'function') return;
+        window.__vanishPendingAuthSubmit = false;
+        var event = document.createEvent('Event');
+        event.initEvent('submit', true, true);
+        window.vanishChatAuthSubmit(event);
+      };
     })();
   </script>
-  <script type="module" src="./js/app.js?v=9"></script>
+  <script type="module" src="./js/app.js?v=11"></script>
 </body>
 </html>

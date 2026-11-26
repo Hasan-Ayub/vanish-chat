@@ -27,7 +27,7 @@ function readDatabaseOverride() {
   try {
     const parsed = JSON.parse(localStorage.getItem(DATABASE_KEY) || '{}');
     return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
+  } catch (ignored) {
     return {};
   }
 }

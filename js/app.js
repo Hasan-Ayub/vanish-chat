@@ -1,7 +1,7 @@
-import * as db from './db.js?v=9';
-import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=9';
-import * as cloud from './backend.js?v=9';
-import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=9';
+import * as db from './db.js?v=11';
+import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=11';
+import * as cloud from './backend.js?v=11';
+import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=11';
 
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_MEDIA_BYTES = 500 * 1024 * 1024;
@@ -38,7 +38,8 @@ function selectChat(id) {
 
 function goBackFromChat() {
   state.selectedChatId = null;
-  if (mobileLayout() && history.state?.vanishChat) {
+  const historyState = history.state;
+  if (mobileLayout() && historyState && historyState.vanishChat) {
     history.back();
   } else {
     renderAll();
@@ -57,7 +58,7 @@ function syncViewportHeight() {
 }
 
 function escapeHtml(value) {
-  return String(value ?? '')
+  return String(value == null ? '' : value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -173,7 +174,7 @@ async function resolvePeerName(peerId) {
     try {
       const profile = await cloud.cloudGetProfileById(peerId);
       if (profile) return profile.username;
-    } catch { /* fall through */ }
+    } catch (ignored) { /* fall through */ }
   }
   return `User ${peerId.slice(0, 6)}`;
 }
@@ -198,7 +199,7 @@ async function restoreSession() {
         account.cloudId = profile.id;
         await db.put('accounts', account);
       }
-    } catch { /* keep local identity */ }
+    } catch (ignored) { /* keep local identity */ }
   }
 
   state.currentUser = account;
@@ -314,7 +315,8 @@ function logout() {
   revokeMediaUrls();
   closeModal();
   history.replaceState(null, '', location.href);
-  document.querySelector('.app-shell')?.classList.remove('chat-open');
+  const shell = document.querySelector('.app-shell');
+  if (shell) shell.classList.remove('chat-open');
   el('main-screen').classList.add('hidden');
   el('auth-screen').classList.remove('hidden');
   el('auth-password').value = '';
@@ -425,7 +427,8 @@ function renderChatList() {
 
   list.innerHTML = chats.map((chat) => {
     const peerName = displayPeerName(chat);
-    const last = state.messages.filter((m) => m.chatId === chat.id).at(-1);
+    const chatMessages = state.messages.filter((m) => m.chatId === chat.id);
+    const last = chatMessages[chatMessages.length - 1];
     let preview = 'No messages yet';
     if (last) {
       if (last.type === 'image') preview = '📷 Photo';
@@ -469,7 +472,7 @@ async function renderChat() {
     el('composer').classList.add('hidden');
     el('messages').classList.add('hidden');
     el('empty-state').classList.remove('hidden');
-    panel?.classList.remove('chat-open');
+    if (panel) panel.classList.remove('chat-open');
     return;
   }
 
@@ -477,7 +480,7 @@ async function renderChat() {
   el('composer').classList.remove('hidden');
   el('messages').classList.remove('hidden');
   el('empty-state').classList.add('hidden');
-  panel?.classList.add('chat-open');
+  if (panel) panel.classList.add('chat-open');
 
   const peerName = displayPeerName(chat);
   el('peer-name').textContent = peerName;
@@ -565,7 +568,10 @@ function openNewChatModal() {
         <button class="btn primary" data-action="new-chat-submit">Start chat</button>
       </div>
     </div>`);
-  setTimeout(() => el('new-chat-username')?.focus(), 50);
+  setTimeout(() => {
+    const input = el('new-chat-username');
+    if (input) input.focus();
+  }, 50);
 }
 
 async function startChatWith(rawUsername) {
@@ -624,7 +630,8 @@ function clearPreview() {
 }
 
 function handleFileSelected(event) {
-  const file = event.target.files?.[0];
+  const files = event.target.files;
+  const file = files && files[0];
   event.target.value = '';
   if (!file) return;
   if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
@@ -691,7 +698,7 @@ async function handleSend(event) {
       if (cloud.cloudEnabled()) {
         try {
           const progress = el('upload-progress');
-          progress?.classList.remove('hidden');
+          if (progress) progress.classList.remove('hidden');
           message.mediaPath = await cloud.cloudUploadMedia(
             message.mediaId,
             file,
@@ -719,7 +726,7 @@ async function handleSend(event) {
       message.remote = true;
     }
     await db.put('messages', message);
-    await db.put('chats', { ...chat, updatedAt: now });
+    await db.put('chats', Object.assign({}, chat, { updatedAt: now }));
 
     el('message-input').value = '';
     clearPreview();
@@ -744,7 +751,7 @@ async function purgeExpiredNow() {
       if (cloud.cloudEnabled() && message.remote) {
         try {
           await cloud.cloudDeleteMessage(message);
-        } catch { /* relay row may already be gone */ }
+        } catch (ignored) { /* relay row may already be gone */ }
       }
     }
     if (result.messages.length) {
@@ -775,10 +782,9 @@ async function pollCloud() {
       const local = await db.get('chats', server.id);
       if (local && local.updatedAt >= server.updatedAt) continue;
       const peerId = server.participants.find((id) => id !== me) || '';
-      await db.put('chats', {
-        ...server,
-        peerName: local?.peerName || await resolvePeerName(peerId),
-      });
+      await db.put('chats', Object.assign({}, server, {
+        peerName: (local && local.peerName) || (await resolvePeerName(peerId)),
+      }));
       changed = true;
     }
 
@@ -967,7 +973,7 @@ async function exportData(chatIds, label) {
 function exportCurrentChat() {
   if (!state.selectedChatId) return;
   const chat = state.chats.find((c) => c.id === state.selectedChatId);
-  exportData([state.selectedChatId], chat?.peerName || 'chat');
+  exportData([state.selectedChatId], (chat && chat.peerName) || 'chat');
 }
 
 /* ---------------- Settings modal ---------------- */
@@ -1030,8 +1036,10 @@ function openSettings() {
 }
 
 async function changePassword() {
-  const current = el('current-password')?.value || '';
-  const next = el('new-password')?.value || '';
+  const currentInput = el('current-password');
+  const nextInput = el('new-password');
+  const current = currentInput ? currentInput.value : '';
+  const next = nextInput ? nextInput.value : '';
   if (next.length < 6) return toast('New password must be at least 6 characters.', 'error');
   const user = state.currentUser;
   if (!(await verifyPassword(current, user.salt, user.hash))) {
@@ -1075,7 +1083,8 @@ function handleGlobalClick(event) {
   } else if (action === 'remove-attachment') {
     clearPreview();
   } else if (action === 'new-chat-submit') {
-    startChatWith(el('new-chat-username')?.value || '');
+    const newChatInput = el('new-chat-username');
+    startChatWith(newChatInput ? newChatInput.value : '');
   } else if (action === 'save-cloud') {
     setCloudConfig({
       broker: el('cloud-broker').value,
@@ -1099,12 +1108,14 @@ function handleGlobalClick(event) {
 }
 
 function bindEvents() {
-  // The inline script in index.html owns the tab click so it works even if
-  // this module (or IndexedDB) is slow or fails. It reports back through here.
+  // The inline script in index.html owns both auth controls so a slow or
+  // blocked module can never cause a native form reload. It calls back here.
   window.vanishChatAuthTabChanged = (tab) => {
     state.authTab = tab;
   };
-  el('auth-form').addEventListener('submit', handleAuthSubmit);
+  state.authTab = window.__vanishAuthTab === 'register' ? 'register' : 'login';
+  window.vanishChatAuthSubmit = handleAuthSubmit;
+  if (typeof window.vanishChatFlushAuth === 'function') window.vanishChatFlushAuth();
   el('btn-new-chat').addEventListener('click', openNewChatModal);
   el('btn-settings').addEventListener('click', openSettings);
   el('btn-chat-settings').addEventListener('click', openSettings);
@@ -1133,13 +1144,16 @@ function bindEvents() {
     renderAll();
   });
   window.addEventListener('popstate', (event) => {
-    const id = event.state?.vanishChat;
+    const eventState = event.state;
+    const id = eventState ? eventState.vanishChat : null;
     state.selectedChatId = state.chats.some((chat) => chat.id === id) ? id : null;
     renderAll();
   });
   window.addEventListener('resize', syncViewportHeight);
-  window.visualViewport?.addEventListener('resize', syncViewportHeight);
-  window.visualViewport?.addEventListener('scroll', syncViewportHeight);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', syncViewportHeight);
+    window.visualViewport.addEventListener('scroll', syncViewportHeight);
+  }
   document.addEventListener('click', handleGlobalClick);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') closeModal();

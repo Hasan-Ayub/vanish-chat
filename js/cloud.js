@@ -10,9 +10,9 @@
  * preserved while the bytes themselves live on the server.
  */
 
-import * as db from './db.js?v=9';
-import { uuid } from './crypto.js?v=9';
-import { getCloudConfig } from '../config.js?v=9';
+import * as db from './db.js?v=11';
+import { uuid } from './crypto.js?v=11';
+import { getCloudConfig } from '../config.js?v=11';
 
 const CHUNK_SIZE = 1024 * 1024;
 
@@ -78,7 +78,7 @@ async function request(path, options = {}) {
 
   const text = await response.text();
   let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+  try { data = text ? JSON.parse(text) : null; } catch (ignored) { data = text; }
 
   if (!response.ok) {
     setStatus('offline');
@@ -99,7 +99,7 @@ export async function cloudCreateProfile({ username, salt, hash }) {
   const id = uuid();
   const row = first(await request('/rest/v1/profiles', {
     method: 'POST',
-    headers: { ...jsonHeaders, Prefer: 'return=representation' },
+    headers: Object.assign({}, jsonHeaders, { Prefer: 'return=representation' }),
     body: JSON.stringify({ id, username, salt, password_hash: hash }),
   }));
   return row || { id, username };
@@ -134,7 +134,7 @@ export async function cloudUpsertChat(chat) {
   const [user_1, user_2] = chat.participants;
   const row = first(await request('/rest/v1/chats', {
     method: 'POST',
-    headers: { ...jsonHeaders, Prefer: 'resolution=merge-duplicates,return=representation' },
+    headers: Object.assign({}, jsonHeaders, { Prefer: 'resolution=merge-duplicates,return=representation' }),
     body: JSON.stringify({
       id: chat.id,
       user_1,
@@ -178,7 +178,7 @@ export async function cloudInsertMessage(message) {
 
   const row = first(await request('/rest/v1/messages', {
     method: 'POST',
-    headers: { ...jsonHeaders, Prefer: 'return=representation' },
+    headers: Object.assign({}, jsonHeaders, { Prefer: 'return=representation' }),
     body: JSON.stringify({
       id: message.id,
       chat_id: message.chatId,
@@ -206,7 +206,7 @@ export async function cloudDeleteMessage(message) {
   }
   try {
     await request(`/rest/v1/messages?id=eq.${encodeURIComponent(message.id)}`, { method: 'DELETE' });
-  } catch {
+  } catch (ignored) {
     // Already removed by the 24h cleanup or another device.
   }
 }
@@ -214,7 +214,7 @@ export async function cloudDeleteMessage(message) {
 /* ---------------- media ---------------- */
 
 function mediaParts(message) {
-  const parts = String(message?.mediaPath || '').split(':');
+  const parts = String((message && message.mediaPath) || '').split(':');
   if (parts[0] !== 'supabase' || parts.length < 4) return null;
   const total = Number(parts[parts.length - 1]);
   return { owner: parts[1], id: parts[2], total: Number.isFinite(total) && total > 0 ? total : 0 };
@@ -274,7 +274,7 @@ export async function cloudDeleteMedia(message) {
   for (let part = 0; part < info.total; part++) {
     try {
       await request(`/storage/v1/object/media/${info.owner}/${info.id}/${part}`, { method: 'DELETE' });
-    } catch {
+    } catch (ignored) {
       // Object may already be gone; ignore.
     }
   }

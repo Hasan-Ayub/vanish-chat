@@ -7,9 +7,9 @@
  * Large files are published as base64 chunks and reassembled by the recipient.
  */
 
-import * as db from './db.js?v=9';
-import { fromBase64 } from './crypto.js?v=9';
-import { getCloudConfig } from '../config.js?v=9';
+import * as db from './db.js?v=11';
+import { fromBase64 } from './crypto.js?v=11';
+import { getCloudConfig } from '../config.js?v=11';
 
 const ROOT = 'vanish-chat/v2';
 const KEEPALIVE = 60;
@@ -164,7 +164,7 @@ function connect() {
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return;
   try {
     socket = new WebSocket(brokerUrl, 'mqtt');
-  } catch {
+  } catch (ignored) {
     scheduleReconnect();
     return;
   }
@@ -229,7 +229,7 @@ function ingest(chunk) {
       const decoded = decodeVarint(inbound, 1);
       remaining = decoded.value;
       headerLength = 1 + decoded.length;
-    } catch {
+    } catch (ignored) {
       return;
     }
     const total = headerLength + remaining;
@@ -296,7 +296,7 @@ async function handlePublish(topic, payload) {
     try {
       profiles.set(topic.split('/').pop(), JSON.parse(decoder.decode(payload)));
       notify();
-    } catch { /* ignore malformed profile */ }
+    } catch (ignored) { /* ignore malformed profile */ }
     return;
   }
 
@@ -322,7 +322,7 @@ async function handlePublish(topic, payload) {
         expiresAt: Date.now() + EXPIRY_SECONDS * 1000,
       });
       notify();
-    } catch { /* ignore malformed chunk */ }
+    } catch (ignored) { /* ignore malformed chunk */ }
     return;
   }
 
@@ -338,7 +338,7 @@ async function handlePublish(topic, payload) {
         queue.push(row);
         notify();
       }
-    } catch { /* ignore malformed message */ }
+    } catch (ignored) { /* ignore malformed message */ }
   }
 }
 
@@ -421,7 +421,7 @@ export async function cloudGetProfileById(id) {
 
 export async function cloudUpdateProfileHash(id, salt, hash) {
   const current = profiles.get(id) || {};
-  const updated = { ...current, id, salt, password_hash: hash };
+  const updated = Object.assign({}, current, { id, salt, password_hash: hash });
   profiles.set(id, updated);
   await publish(`${ROOT}/profile/${id}`, encoder.encode(JSON.stringify(updated)), { expiry: 0 });
 }
@@ -503,12 +503,12 @@ export async function cloudDeleteMessage(message) {
   const empty = new Uint8Array(0);
   try {
     await publish(`${base}/msg/${message.id}`, empty);
-  } catch { /* best effort */ }
+  } catch (ignored) { /* best effort */ }
   if (message.mediaChunks) {
     for (let part = 0; part < message.mediaChunks; part++) {
       try {
         await publish(`${base}/chunk/${message.mediaId}/${part}`, empty);
-      } catch { /* best effort */ }
+      } catch (ignored) { /* best effort */ }
     }
   }
 }

@@ -53,7 +53,7 @@ export async function hashPassword(password) {
 export async function verifyPassword(password, salt, hash) {
   try {
     return (await deriveHash(password, salt)) === hash;
-  } catch {
+  } catch (ignored) {
     return false;
   }
 }
