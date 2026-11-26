@@ -1,7 +1,7 @@
-import * as db from './db.js?v=6';
-import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=6';
-import * as cloud from './backend.js?v=6';
-import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=6';
+import * as db from './db.js?v=7';
+import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=7';
+import * as cloud from './backend.js?v=7';
+import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=7';
 
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_MEDIA_BYTES = 500 * 1024 * 1024;
