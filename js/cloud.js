@@ -10,9 +10,9 @@
  * preserved while the bytes themselves live on the server.
  */
 
-import * as db from './db.js?v=13';
-import { uuid } from './crypto.js?v=13';
-import { getCloudConfig } from '../config.js?v=13';
+import * as db from './db.js?v=14';
+import { uuid } from './crypto.js?v=14';
+import { getCloudConfig } from '../config.js?v=14';
 
 const CHUNK_SIZE = 1024 * 1024;
 

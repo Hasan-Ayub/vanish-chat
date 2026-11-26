@@ -1,7 +1,7 @@
-import * as db from './db.js?v=13';
-import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=13';
-import * as cloud from './backend.js?v=13';
-import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=13';
+import * as db from './db.js?v=14';
+import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=14';
+import * as cloud from './backend.js?v=14';
+import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=14';
 
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_MEDIA_BYTES = 500 * 1024 * 1024;
@@ -22,6 +22,8 @@ const state = {
   polling: false,
   purging: false,
 };
+
+const viewer = { items: [], index: 0, url: '' };
 
 let messageSignature = '';
 
@@ -510,6 +512,71 @@ function revokeMediaUrls() {
   state.mediaUrls.clear();
 }
 
+async function openMediaViewer(messageId, mediaId) {
+  const items = [];
+  const messages = state.messages.filter((message) => message.chatId === state.selectedChatId);
+  for (const message of messages) {
+    for (const attachment of messageMedia(message)) {
+      let media = await db.get('media', attachment.id);
+      if (!media && attachment.path && cloud.cloudEnabled()) {
+        await fetchCloudMedia(message, attachment);
+        media = await db.get('media', attachment.id);
+      }
+      if (media) {
+        items.push({
+          messageId: message.id,
+          id: attachment.id,
+          name: attachment.name,
+          mime: attachment.mime,
+          blob: media.blob,
+        });
+      }
+    }
+  }
+  if (!items.length) return toast('That media is no longer available.', 'error');
+  let index = 0;
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].id === mediaId || items[i].messageId === messageId) {
+      index = i;
+      if (items[i].id === mediaId) break;
+    }
+  }
+  viewer.items = items;
+  viewer.index = index;
+  renderMediaViewer();
+}
+
+function renderMediaViewer() {
+  if (viewer.url) URL.revokeObjectURL(viewer.url);
+  viewer.url = '';
+  const item = viewer.items[viewer.index];
+  if (!item) return closeModal();
+  viewer.url = URL.createObjectURL(item.blob);
+  const isVideo = String(item.mime).indexOf('video/') === 0;
+  const mediaTag = isVideo
+    ? `<video src="${viewer.url}" controls playsinline autoplay></video>`
+    : `<img src="${viewer.url}" alt="${escapeHtml(item.name)}">`;
+  const hasMany = viewer.items.length > 1;
+  openModal(`
+    <div class="media-viewer-head">
+      <span class="media-viewer-title">${escapeHtml(item.name)}</span>
+      <span class="media-viewer-count">${viewer.index + 1} / ${viewer.items.length}</span>
+      <button class="icon-btn" data-action="close-modal" aria-label="Close viewer">✕</button>
+    </div>
+    <div class="media-viewer-stage">${mediaTag}</div>
+    <div class="media-viewer-foot">
+      ${hasMany ? '<button class="viewer-nav" data-action="viewer-prev" aria-label="Previous">‹</button>' : '<span></span>'}
+      <button class="btn small" data-download="${escapeHtml(item.messageId)}" data-media-id="${escapeHtml(item.id)}">Download</button>
+      ${hasMany ? '<button class="viewer-nav" data-action="viewer-next" aria-label="Next">›</button>' : '<span></span>'}
+    </div>`, 'media-viewer');
+}
+
+function stepMediaViewer(direction) {
+  if (viewer.items.length < 2) return;
+  viewer.index = (viewer.index + direction + viewer.items.length) % viewer.items.length;
+  renderMediaViewer();
+}
+
 function forceMessageRender() {
   messageSignature = '';
 }
@@ -554,10 +621,11 @@ async function renderChat() {
       if (media) {
         const url = URL.createObjectURL(media.blob);
         state.mediaUrls.set(attachment.id, url);
+        const viewAttrs = `data-view="${escapeHtml(message.id)}" data-media-id="${escapeHtml(attachment.id)}"`;
         const tag = attachment.type === 'video'
           ? `<video src="${url}" controls playsinline></video>`
-          : `<img src="${url}" alt="${escapeHtml(attachment.name)}">`;
-        mediaHtml += `<div class="bubble-media"><div class="bubble-media-item">${tag}<button class="download-btn" data-download="${escapeHtml(message.id)}" data-media-id="${escapeHtml(attachment.id)}">Download</button></div></div>`;
+          : `<img src="${url}" alt="${escapeHtml(attachment.name)}" ${viewAttrs}>`;
+        mediaHtml += `<div class="bubble-media"><div class="bubble-media-item">${tag}<button class="view-btn" ${viewAttrs} aria-label="View ${escapeHtml(attachment.name)}">View</button><button class="download-btn" data-download="${escapeHtml(message.id)}" data-media-id="${escapeHtml(attachment.id)}">Save</button></div></div>`;
       } else {
         mediaHtml += `<div class="media-missing">${escapeHtml(attachment.name)} — media expired or unavailable</div>`;
       }
@@ -592,15 +660,32 @@ function updateCountdowns() {
 
 /* ---------------- Chats / sending ---------------- */
 
-function openModal(html) {
+function openModal(html, className) {
   el('modal-root').innerHTML = `
     <div class="modal-backdrop" data-action="close-modal">
-      <div class="modal" role="dialog" aria-modal="true">${html}</div>
+      <div class="modal ${className || ''}" role="dialog" aria-modal="true">${html}</div>
     </div>`;
 }
 
 function closeModal() {
   el('modal-root').innerHTML = '';
+  if (viewer.url) URL.revokeObjectURL(viewer.url);
+  viewer.url = '';
+  viewer.items = [];
+  viewer.index = 0;
+}
+
+function openAttachModal() {
+  openModal(`
+    <div class="modal-head"><h3>Add media</h3><button class="icon-btn" data-action="close-modal">✕</button></div>
+    <div class="modal-section">
+      <p>Choose saved photos/videos from your phone, or open the camera.</p>
+      <div class="modal-actions attach-actions">
+        <button class="btn primary block" data-action="pick-library">Photos &amp; videos</button>
+        <button class="btn block" data-action="take-photo">Take photo</button>
+        <button class="btn block" data-action="record-video">Record video</button>
+      </div>
+    </div>`);
 }
 
 function openNewChatModal() {
@@ -1237,6 +1322,12 @@ function handleGlobalClick(event) {
     return;
   }
 
+  const view = event.target.closest('[data-view]');
+  if (view) {
+    openMediaViewer(view.dataset.view, view.dataset.mediaId);
+    return;
+  }
+
   const actionNode = event.target.closest('[data-action]');
   if (!actionNode) {
     if (event.target.classList.contains('modal-backdrop')) closeModal();
@@ -1247,6 +1338,19 @@ function handleGlobalClick(event) {
   if (action === 'close-modal') {
     if (actionNode.classList.contains('modal-backdrop') && event.target !== actionNode) return;
     closeModal();
+  } else if (action === 'pick-library') {
+    closeModal();
+    el('file-input').click();
+  } else if (action === 'take-photo') {
+    closeModal();
+    el('camera-photo-input').click();
+  } else if (action === 'record-video') {
+    closeModal();
+    el('camera-video-input').click();
+  } else if (action === 'viewer-prev') {
+    stepMediaViewer(-1);
+  } else if (action === 'viewer-next') {
+    stepMediaViewer(1);
   } else if (action === 'remove-attachment') {
     const index = Number(actionNode.dataset.index);
     const item = state.attachments[index];
@@ -1293,8 +1397,10 @@ function bindEvents() {
   el('btn-logout').addEventListener('click', logout);
   el('btn-back').addEventListener('click', goBackFromChat);
   el('btn-export').addEventListener('click', exportCurrentChat);
-  el('btn-attach').addEventListener('click', () => el('file-input').click());
+  el('btn-attach').addEventListener('click', openAttachModal);
   el('file-input').addEventListener('change', handleFileSelected);
+  el('camera-photo-input').addEventListener('change', handleFileSelected);
+  el('camera-video-input').addEventListener('change', handleFileSelected);
   el('composer').addEventListener('submit', handleSend);
   el('message-input').addEventListener('keydown', (event) => {
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;

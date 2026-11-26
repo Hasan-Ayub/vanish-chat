@@ -9,6 +9,8 @@ A messaging web app where every message, image and video is **permanently delete
 - Server-side accounts, chats, messages and media (Supabase), with a zero-setup MQTT relay fallback
 - Send up to **10 images/videos at once**, each up to **500 MB** (split into chunks and reassembled by the recipient)
 - Automatic 24-hour deletion, live countdowns and upload progress
+- On phones, choose saved photos/videos or open the camera from the attach sheet
+- Tap a received photo/video to open it in the app's own viewer, with next/previous and download buttons
 - Download individual files or export a whole chat before expiry
 - iPhone-inspired liquid glass UI for phones, tablets and desktops
 - IndexedDB is used only as a local cache; the server is the source of truth when configured
