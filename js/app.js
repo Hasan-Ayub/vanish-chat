@@ -1,15 +1,10 @@
 import * as db from './db.js';
 import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js';
-import * as cloud from './cloud.js';
-import {
-  isCloudConfigured,
-  getCloudConfig,
-  setCloudConfig,
-  clearCloudConfig,
-} from '../config.js';
+import * as cloud from './relay.js';
+import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js';
 
 const RETENTION_MS = 24 * 60 * 60 * 1000;
-const MAX_MEDIA_BYTES = 50 * 1024 * 1024;
+const MAX_MEDIA_BYTES = 500 * 1024 * 1024;
 const MAX_EMBED_BYTES = 25 * 1024 * 1024;
 const SESSION_KEY = 'vanish-chat.session';
 
@@ -106,6 +101,12 @@ function peerOf(chat) {
   return chat.participants.find((id) => id !== identity()) || '';
 }
 
+function displayPeerName(chat) {
+  const peerId = peerOf(chat);
+  const local = state.accounts.find((account) => account.id === peerId || account.cloudId === peerId);
+  return local ? local.username : (chat.peerName || `User ${peerId.slice(0, 6)}`);
+}
+
 function normalizeUsername(value) {
   return String(value || '').trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '');
 }
@@ -116,7 +117,7 @@ async function findAccountByUsername(username) {
   if (cloud.cloudEnabled()) {
     try {
       const profile = await cloud.cloudGetProfile(username);
-      if (profile) {
+      if (profile && profile.password_hash) {
         const account = {
           id: profile.id,
           cloudId: profile.id,
@@ -217,30 +218,37 @@ async function handleAuthSubmit(event) {
       const id = uuid();
       let cloudId = null;
       if (cloud.cloudEnabled()) {
-        cloud.setCloudUser(id);
-        const profile = await cloud.cloudCreateProfile({ id, username, salt, hash });
+        const profile = await cloud.cloudCreateProfile({ username, salt, hash });
         cloudId = profile.id || id;
       }
       await db.put('accounts', { id, cloudId, username, salt, hash, createdAt: Date.now() });
       await signIn(id);
     } else {
-      const account = await findAccountByUsername(username);
+      let account = await findAccountByUsername(username);
+      if (cloud.cloudEnabled()) {
+        const profile = await cloud.cloudGetProfile(username);
+        if (profile && profile.password_hash) {
+          if (!account) {
+            account = {
+              id: profile.id,
+              cloudId: profile.id,
+              username: profile.username,
+              salt: profile.salt,
+              hash: profile.password_hash,
+              createdAt: Date.parse(profile.created_at) || Date.now(),
+            };
+            await db.put('accounts', account);
+          } else if (account.hash !== profile.password_hash) {
+            account.hash = profile.password_hash;
+            account.salt = profile.salt;
+            if (!account.cloudId) account.cloudId = profile.id;
+            await db.put('accounts', account);
+          }
+        }
+      }
       const valid = account && (await verifyPassword(password, account.salt, account.hash));
       if (!valid) throw new Error('Invalid username or password.');
-
-      if (cloud.cloudEnabled()) {
-        if (!account.cloudId) {
-          const profile = await cloud.cloudGetProfile(username);
-          if (!profile || !(await verifyPassword(password, profile.salt, profile.password_hash))) {
-            throw new Error('This account is not registered in the connected cloud project.');
-          }
-          account.cloudId = profile.id;
-          account.hash = profile.password_hash;
-          account.salt = profile.salt;
-          await db.put('accounts', account);
-        }
-        cloud.setCloudUser(account.cloudId);
-      }
+      if (cloud.cloudEnabled() && account) cloud.setCloudUser(account.cloudId || account.id);
       await signIn(account.id);
     }
   } catch (error) {
@@ -333,11 +341,18 @@ function renderAll() {
   renderChat();
 }
 
+function relayLabel() {
+  const status = cloud.getStatus();
+  if (status === 'connected') return 'Relay connected';
+  if (status === 'connecting') return 'Relay connecting…';
+  return 'Relay offline';
+}
+
 function renderModePill() {
   const pill = el('mode-pill');
-  const enabled = isCloudConfigured();
-  pill.textContent = enabled ? 'Cloud connected' : 'Local demo mode';
-  pill.classList.toggle('cloud', enabled);
+  const status = cloud.getStatus();
+  pill.textContent = status === 'connected' ? 'Zero-setup relay' : `Relay ${status}`;
+  pill.classList.toggle('cloud', status === 'connected');
 }
 
 function renderHeader() {
@@ -345,7 +360,7 @@ function renderHeader() {
   if (!user) return;
   el('me-name').textContent = user.username;
   decorateAvatar(el('me-avatar'), user.username);
-  el('me-status').textContent = cloud.cloudEnabled() ? 'Cloud connected' : 'Local demo mode';
+  el('me-status').textContent = relayLabel();
 }
 
 async function renderStorageInfo() {
@@ -372,7 +387,7 @@ function renderChatList() {
   }
 
   list.innerHTML = chats.map((chat) => {
-    const peerName = chat.peerName || resolvePeerNameSync(peerOf(chat));
+    const peerName = displayPeerName(chat);
     const last = state.messages.filter((m) => m.chatId === chat.id).at(-1);
     let preview = 'No messages yet';
     if (last) {
@@ -427,12 +442,12 @@ async function renderChat() {
   el('empty-state').classList.add('hidden');
   panel?.classList.add('chat-open');
 
-  const peerName = chat.peerName || resolvePeerNameSync(peerOf(chat));
+  const peerName = displayPeerName(chat);
   el('peer-name').textContent = peerName;
   decorateAvatar(el('peer-avatar'), peerName);
 
   const messages = state.messages.filter((m) => m.chatId === chat.id);
-  const signature = messages.map((m) => m.id).join('|');
+  const signature = [identity(), ...messages.map((m) => m.id)].join('|');
   if (signature === messageSignature) {
     updateCountdowns();
     return;
@@ -501,9 +516,7 @@ function closeModal() {
 }
 
 function openNewChatModal() {
-  const example = cloud.cloudEnabled()
-    ? 'Search any username registered in the connected cloud project.'
-    : 'In local demo mode you can only find accounts created in this browser. Connect a cloud project to message other devices.';
+  const example = 'Enter any username. Messages are delivered through the public relay even if that person is offline — they have 24 hours to open the app and download files.';
   openModal(`
     <div class="modal-head"><h3>New chat</h3><button class="icon-btn" data-action="close-modal">✕</button></div>
     <div class="modal-section">
@@ -528,19 +541,13 @@ async function startChatWith(rawUsername) {
   let peerId;
   let peerName;
   try {
-    if (cloud.cloudEnabled()) {
-      const profile = await cloud.cloudGetProfile(username);
-      if (!profile) return toast('No user with that username.', 'error');
-      peerId = profile.id;
-      peerName = profile.username;
-    } else {
-      const found = await db.getByIndex('accounts', 'by-username', username);
-      if (!found.length) {
-        return toast('No local account found. Connect a cloud project to message other devices.', 'error');
-      }
-      peerId = found[0].cloudId || found[0].id;
-      peerName = found[0].username;
+    if (cloud.getStatus() !== 'connected') {
+      return toast('Relay is offline. Wait a moment and try again.', 'error');
     }
+    const profile = await cloud.cloudGetProfile(username);
+    if (!profile) return toast('Could not resolve that username.', 'error');
+    peerId = profile.id;
+    peerName = profile.username;
   } catch (error) {
     return toast(`Lookup failed: ${error.message}`, 'error');
   }
@@ -565,6 +572,11 @@ function clearPreview() {
   state.attachment = null;
   el('attachment-preview').innerHTML = '';
   el('attachment-preview').classList.add('hidden');
+  if (el('upload-progress')) {
+    el('upload-progress').classList.add('hidden');
+    el('upload-bar').style.width = '0%';
+    el('upload-label').textContent = '';
+  }
 }
 
 function handleFileSelected(event) {
@@ -576,6 +588,9 @@ function handleFileSelected(event) {
   }
   if (file.size > MAX_MEDIA_BYTES) {
     return toast(`Files must be under ${formatBytes(MAX_MEDIA_BYTES)}.`, 'error');
+  }
+  if (file.size > 100 * 1024 * 1024) {
+    toast('Large file selected — sending may take a few minutes. Keep this tab open.', 'info');
   }
   clearPreview();
   state.attachment = file;
@@ -613,6 +628,7 @@ async function handleSend(event) {
       mediaName: file ? file.name : null,
       mediaMime: file ? file.type : null,
       mediaSize: file ? file.size : null,
+      mediaChunks: 0,
       createdAt: now,
       expiresAt: now + RETENTION_MS,
       remote: false,
@@ -630,7 +646,23 @@ async function handleSend(event) {
       });
       if (cloud.cloudEnabled()) {
         try {
-          message.mediaPath = await cloud.cloudUploadMedia(message.mediaId, file, file.name, file.type);
+          const progress = el('upload-progress');
+          progress?.classList.remove('hidden');
+          message.mediaPath = await cloud.cloudUploadMedia(
+            message.mediaId,
+            file,
+            file.name,
+            file.type,
+            message.recipientId,
+            (part, total) => {
+              if (!el('upload-bar')) return;
+              const percent = Math.round((part / total) * 100);
+              el('upload-bar').style.width = `${percent}%`;
+              el('upload-label').textContent = `Uploading ${formatBytes(file.size)} — ${percent}% (${part}/${total} parts)`;
+            }
+          );
+          const [, , total] = message.mediaPath.split(':');
+          message.mediaChunks = Number(total) || 1;
         } catch (error) {
           await db.del('media', message.mediaId);
           throw new Error(`Upload failed: ${error.message}`);
@@ -667,9 +699,8 @@ async function purgeExpiredNow() {
     for (const message of result.messages) {
       if (cloud.cloudEnabled() && message.remote) {
         try {
-          await cloud.cloudDeleteMessage(message.id);
-          if (message.mediaPath) await cloud.cloudDeleteMedia(message.mediaPath);
-        } catch { /* cloud row may already be gone */ }
+          await cloud.cloudDeleteMessage(message);
+        } catch { /* relay row may already be gone */ }
       }
     }
     if (result.messages.length) {
@@ -690,11 +721,24 @@ async function pollCloud() {
   state.polling = true;
   try {
     const me = identity();
-    const rows = await cloud.cloudFetchMessages(me);
-    const remoteIds = new Set(rows.map((row) => row.id));
-    let added = false;
+    const rows = cloud.cloudFetchMessages(me);
+    let changed = false;
 
     for (const row of rows) {
+      if (row.__deleted) {
+        const local = await db.get('messages', row.id);
+        if (local) {
+          if (local.mediaId) {
+            const remaining = await db.getByIndex('chunks', 'by-media', local.mediaId);
+            for (const chunk of remaining) await db.del('chunks', chunk.id);
+            await db.del('media', local.mediaId);
+          }
+          await db.del('messages', local.id);
+          changed = true;
+        }
+        continue;
+      }
+
       if (await db.get('messages', row.id)) continue;
       let chat = await db.get('chats', row.chat_id);
       if (!chat) {
@@ -716,8 +760,9 @@ async function pollCloud() {
         recipientId: row.recipient_id,
         type: row.kind || 'text',
         text: row.body || '',
-        mediaId: row.media_path ? `${row.id}-media` : null,
+        mediaId: row.media_id || null,
         mediaPath: row.media_path || null,
+        mediaChunks: row.media_chunks || 0,
         mediaName: row.media_name || null,
         mediaMime: row.media_mime || null,
         mediaSize: row.media_size || null,
@@ -726,30 +771,24 @@ async function pollCloud() {
         remote: true,
       };
       await db.put('messages', message);
-      added = true;
-
-      if (row.media_path && !(await db.get('media', message.mediaId))) {
-        fetchCloudMedia(message);
-      }
+      changed = true;
     }
 
-    // A row disappearing from the server means it expired or was deleted.
+    // Chunks can arrive after the message; retry assembly every poll.
     const locals = await db.getAll('messages');
     for (const message of locals) {
-      if (message.remote && !remoteIds.has(message.id)) {
-        if (message.mediaId) await db.del('media', message.mediaId);
-        await db.del('messages', message.id);
-        added = true;
+      if (message.mediaId && !(await db.get('media', message.mediaId))) {
+        await fetchCloudMedia(message);
       }
     }
 
-    if (added) {
+    if (changed) {
       forceMessageRender();
       await loadData();
       renderAll();
     }
   } catch (error) {
-    console.warn('Cloud sync failed', error);
+    console.warn('Relay sync failed', error);
   } finally {
     state.polling = false;
   }
@@ -757,23 +796,13 @@ async function pollCloud() {
 
 async function fetchCloudMedia(message) {
   try {
-    const url = cloud.cloudMediaUrl(message.mediaPath);
-    const response = await fetch(url);
-    if (!response.ok) return;
-    const blob = await response.blob();
-    await db.put('media', {
-      id: message.mediaId,
-      blob,
-      name: message.mediaName || 'media',
-      mime: message.mediaMime || blob.type,
-      size: blob.size,
-      createdAt: message.createdAt,
-      expiresAt: message.expiresAt,
-    });
-    forceMessageRender();
-    renderChat();
+    const done = await cloud.cloudFetchMedia(message);
+    if (done) {
+      forceMessageRender();
+      renderChat();
+    }
   } catch (error) {
-    console.warn('Could not download media', error);
+    console.warn('Could not assemble media', error);
   }
 }
 
@@ -888,6 +917,9 @@ function exportCurrentChat() {
 function openSettings() {
   const user = state.currentUser;
   const cfg = getCloudConfig();
+  const brokerOptions = BROKERS.map((broker) =>
+    `<option value="${escapeHtml(broker.url)}" ${broker.url === cfg.broker ? 'selected' : ''}>${escapeHtml(broker.label)}</option>`
+  ).join('');
   openModal(`
     <div class="modal-head"><h3>Settings</h3><button class="icon-btn" data-action="close-modal">✕</button></div>
 
@@ -906,13 +938,13 @@ function openSettings() {
     </div>
 
     <div class="modal-section">
-      <h4>Cloud connection</h4>
-      <p>Leave blank for local-only mode. Cloud mode is required to message people on other devices. See the repository README and <code>supabase/schema.sql</code>.</p>
-      <label class="field"><span>Project URL</span><input id="cloud-url" placeholder="https://xxxx.supabase.co" value="${escapeHtml(cfg.url)}"></label>
-      <label class="field"><span>Anon / public key</span><input id="cloud-key" placeholder="eyJ..." value="${escapeHtml(cfg.anonKey)}"></label>
+      <h4>Relay connection</h4>
+      <p>Status: <strong>${escapeHtml(relayLabel())}</strong>. No account or API key is needed — messages travel through a public MQTT relay and expire there after 24 hours. Avoid sharing sensitive information.</p>
+      <label class="field"><span>Broker</span>
+        <select id="cloud-broker" class="field-select">${brokerOptions}</select>
+      </label>
       <div class="modal-actions">
-        <button class="btn small primary" data-action="save-cloud">Save &amp; reload</button>
-        <button class="btn small ghost" data-action="disconnect-cloud">Disconnect</button>
+        <button class="btn small primary" data-action="save-cloud">Switch broker</button>
       </div>
     </div>
 
@@ -975,12 +1007,8 @@ function handleGlobalClick(event) {
   } else if (action === 'new-chat-submit') {
     startChatWith(el('new-chat-username')?.value || '');
   } else if (action === 'save-cloud') {
-    setCloudConfig({ url: el('cloud-url').value, anonKey: el('cloud-key').value });
-    toast('Cloud settings saved. Reloading…', 'success');
-    setTimeout(() => location.reload(), 600);
-  } else if (action === 'disconnect-cloud') {
-    clearCloudConfig();
-    toast('Cloud disconnected. Reloading…');
+    setCloudConfig({ broker: el('cloud-broker').value });
+    toast('Broker switched. Reloading…', 'success');
     setTimeout(() => location.reload(), 600);
   } else if (action === 'change-password') {
     changePassword();
@@ -1037,6 +1065,10 @@ async function init() {
   await db.purgeExpired();
   bindEvents();
   renderModePill();
+  cloud.setOnChange(() => {
+    renderModePill();
+    if (state.currentUser) renderHeader();
+  });
 
   const restored = await restoreSession();
   if (restored) await enterApp();

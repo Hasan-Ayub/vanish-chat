@@ -1,7 +1,7 @@
 /** Tiny promise wrapper around IndexedDB for local-first storage. */
 
 const DB_NAME = 'vanish-chat';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 let dbPromise = null;
 
 export function openDB() {
@@ -33,6 +33,11 @@ export function openDB() {
         const store = db.createObjectStore('media', { keyPath: 'id' });
         store.createIndex('by-expires', 'expiresAt');
       }
+      if (!db.objectStoreNames.contains('chunks')) {
+        const store = db.createObjectStore('chunks', { keyPath: 'id' });
+        store.createIndex('by-media', 'mediaId');
+        store.createIndex('by-expires', 'expiresAt');
+      }
     };
 
     request.onsuccess = () => resolve(request.result);
@@ -55,7 +60,7 @@ async function withStore(name, mode, fn) {
       reject(error);
       return;
     }
-    tx.oncomplete = () => resolve(out && out.result !== undefined ? out.result : out);
+    tx.oncomplete = () => resolve(out && 'result' in out ? out.result : out);
     tx.onerror = () => reject(tx.error);
     tx.onabort = () => reject(tx.error || new Error('Transaction aborted'));
   });
@@ -74,15 +79,24 @@ export const getByIndex = (store, index, value) =>
  * Returns the removed records so the caller can mirror deletions to the cloud.
  */
 export async function purgeExpired(now = Date.now()) {
-  const [messages, media] = await Promise.all([getAll('messages'), getAll('media')]);
+  const [messages, media, chunks] = await Promise.all([
+    getAll('messages'),
+    getAll('media'),
+    getAll('chunks'),
+  ]);
   const expiredMessages = messages.filter((m) => m.expiresAt <= now);
   const mediaIds = new Set([
     ...expiredMessages.filter((m) => m.mediaId).map((m) => m.mediaId),
     ...media.filter((item) => item.expiresAt <= now).map((item) => item.id),
   ]);
+  const chunkIds = new Set([
+    ...chunks.filter((item) => item.expiresAt <= now).map((item) => item.id),
+    ...chunks.filter((item) => mediaIds.has(item.mediaId)).map((item) => item.id),
+  ]);
 
   for (const message of expiredMessages) await del('messages', message.id);
   for (const id of mediaIds) await del('media', id);
+  for (const id of chunkIds) await del('chunks', id);
 
   return { messages: expiredMessages, media: [...mediaIds] };
 }

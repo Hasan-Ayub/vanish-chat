@@ -1,36 +1,28 @@
 /**
- * Optional cloud connection (Supabase).
+ * Zero-setup relay configuration.
  *
- * Leave these blank to run in LOCAL DEMO MODE: accounts, chats and media live
- * only in this browser. To message people on other devices, paste your
- * Supabase project URL and anon key below, or use the in-app Settings panel.
- * See supabase/schema.sql and README.md for setup.
+ * The app uses a public MQTT-over-WebSocket broker to deliver messages between
+ * accounts. No credentials or accounts are needed. You can switch brokers in
+ * Settings if one is unavailable.
  */
-export const DEFAULT_CLOUD_CONFIG = {
-  url: '',      // e.g. https://abcdefghijklmno.supabase.co
-  anonKey: '',  // Supabase "anon / public" key
-};
 
-const STORAGE_KEY = 'vanish-chat.cloud';
+export const BROKERS = [
+  { label: 'HiveMQ (default)', url: 'wss://broker.hivemq.com:8884/mqtt' },
+  { label: 'EMQX', url: 'wss://broker.emqx.io:8084/mqtt' },
+  { label: 'Mosquitto test', url: 'wss://test.mosquitto.org:8081/mqtt' },
+];
+
+const STORAGE_KEY = 'vanish-chat.broker';
 
 export function getCloudConfig() {
-  let saved = {};
-  try {
-    saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}') || {};
-  } catch {
-    saved = {};
-  }
-  return {
-    url: String(saved.url || DEFAULT_CLOUD_CONFIG.url || '').replace(/\/+$/, ''),
-    anonKey: String(saved.anonKey || DEFAULT_CLOUD_CONFIG.anonKey || '').trim(),
-  };
+  const saved = localStorage.getItem(STORAGE_KEY);
+  const match = BROKERS.find((broker) => broker.url === saved);
+  return { broker: match ? match.url : BROKERS[0].url };
 }
 
-export function setCloudConfig({ url, anonKey }) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    url: String(url || '').trim().replace(/\/+$/, ''),
-    anonKey: String(anonKey || '').trim(),
-  }));
+export function setCloudConfig({ broker }) {
+  const match = BROKERS.find((item) => item.url === broker);
+  if (match) localStorage.setItem(STORAGE_KEY, match.url);
 }
 
 export function clearCloudConfig() {
@@ -38,6 +30,5 @@ export function clearCloudConfig() {
 }
 
 export function isCloudConfigured() {
-  const cfg = getCloudConfig();
-  return Boolean(cfg.url && cfg.anonKey);
+  return true;
 }
