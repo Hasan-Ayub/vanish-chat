@@ -1,7 +1,7 @@
-import * as db from './db.js?v=2';
-import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=2';
-import * as cloud from './relay.js?v=2';
-import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=2';
+import * as db from './db.js?v=6';
+import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=6';
+import * as cloud from './backend.js?v=6';
+import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=6';
 
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_MEDIA_BYTES = 500 * 1024 * 1024;
@@ -26,6 +26,35 @@ const state = {
 let messageSignature = '';
 
 const el = (id) => document.getElementById(id);
+const mobileLayout = () => window.matchMedia('(max-width: 800px)').matches;
+
+function selectChat(id) {
+  if (state.selectedChatId === id) return;
+  state.selectedChatId = id;
+  if (id && mobileLayout()) {
+    history.pushState({ vanishChat: id }, '', location.href);
+  }
+}
+
+function goBackFromChat() {
+  state.selectedChatId = null;
+  if (mobileLayout() && history.state?.vanishChat) {
+    history.back();
+  } else {
+    renderAll();
+  }
+}
+
+function syncViewportHeight() {
+  const viewport = window.visualViewport;
+  if (!viewport) return;
+  const keyboardOpen = viewport.height < window.innerHeight - 120;
+  document.documentElement.style.setProperty(
+    '--app-height',
+    keyboardOpen ? `${Math.round(viewport.height)}px` : ''
+  );
+  if (keyboardOpen) requestAnimationFrame(scrollToBottom);
+}
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -281,6 +310,7 @@ function logout() {
   clearPreview();
   revokeMediaUrls();
   closeModal();
+  history.replaceState(null, '', location.href);
   document.querySelector('.app-shell')?.classList.remove('chat-open');
   el('main-screen').classList.add('hidden');
   el('auth-screen').classList.remove('hidden');
@@ -343,15 +373,19 @@ function renderAll() {
 
 function relayLabel() {
   const status = cloud.getStatus();
-  if (status === 'connected') return 'Relay connected';
-  if (status === 'connecting') return 'Relay connecting…';
-  return 'Relay offline';
+  const name = cloud.backendName() === 'database' ? 'Database' : 'Relay';
+  if (status === 'connected') return `${name} connected`;
+  if (status === 'connecting') return `${name} connecting…`;
+  return `${name} offline`;
 }
 
 function renderModePill() {
   const pill = el('mode-pill');
   const status = cloud.getStatus();
-  pill.textContent = status === 'connected' ? 'Zero-setup relay' : `Relay ${status}`;
+  const database = cloud.backendName() === 'database';
+  pill.textContent = status === 'connected'
+    ? (database ? 'Cloud database' : 'Zero-setup relay')
+    : `${database ? 'Database' : 'Relay'} ${status}`;
   pill.classList.toggle('cloud', status === 'connected');
 }
 
@@ -560,7 +594,14 @@ async function startChatWith(rawUsername) {
     chat.peerName = peerName;
   }
   await db.put('chats', chat);
-  state.selectedChatId = id;
+  if (cloud.cloudEnabled()) {
+    try {
+      await cloud.cloudUpsertChat(chat);
+    } catch (error) {
+      toast(`Chat could not be saved to the server: ${error.message}`, 'error');
+    }
+  }
+  selectChat(id);
   closeModal();
   await loadData();
   renderAll();
@@ -661,8 +702,8 @@ async function handleSend(event) {
               el('upload-label').textContent = `Uploading ${formatBytes(file.size)} — ${percent}% (${part}/${total} parts)`;
             }
           );
-          const [, , total] = message.mediaPath.split(':');
-          message.mediaChunks = Number(total) || 1;
+          const parts = message.mediaPath.split(':');
+          message.mediaChunks = Number(parts[parts.length - 1]) || 1;
         } catch (error) {
           await db.del('media', message.mediaId);
           throw new Error(`Upload failed: ${error.message}`);
@@ -721,8 +762,22 @@ async function pollCloud() {
   state.polling = true;
   try {
     const me = identity();
-    const rows = cloud.cloudFetchMessages(me);
+    const [rows, serverChats] = await Promise.all([
+      cloud.cloudFetchMessages(me),
+      cloud.cloudFetchChats(me),
+    ]);
     let changed = false;
+
+    for (const server of serverChats) {
+      const local = await db.get('chats', server.id);
+      if (local && local.updatedAt >= server.updatedAt) continue;
+      const peerId = server.participants.find((id) => id !== me) || '';
+      await db.put('chats', {
+        ...server,
+        peerName: local?.peerName || await resolvePeerName(peerId),
+      });
+      changed = true;
+    }
 
     for (const row of rows) {
       if (row.__deleted) {
@@ -788,7 +843,7 @@ async function pollCloud() {
       renderAll();
     }
   } catch (error) {
-    console.warn('Relay sync failed', error);
+    console.warn('Server sync failed', error);
   } finally {
     state.polling = false;
   }
@@ -938,14 +993,26 @@ function openSettings() {
     </div>
 
     <div class="modal-section">
-      <h4>Relay connection</h4>
-      <p>Status: <strong>${escapeHtml(relayLabel())}</strong>. No account or API key is needed — messages travel through a public MQTT relay and expire there after 24 hours. Avoid sharing sensitive information.</p>
+      <h4>Server database</h4>
+      <p>Status: <strong>${escapeHtml(relayLabel())}</strong>. With Supabase configured, accounts, chats, messages and media are stored on the server and sync to every device. Leave blank to use the public relay fallback.</p>
+      <label class="field"><span>Supabase project URL</span>
+        <input id="supabase-url" type="url" spellcheck="false" placeholder="https://xxxx.supabase.co" value="${escapeHtml(cfg.supabaseUrl)}">
+      </label>
+      <label class="field"><span>Anon/public key</span>
+        <input id="supabase-key" type="text" spellcheck="false" placeholder="eyJ..." value="${escapeHtml(cfg.supabaseKey)}">
+      </label>
+      <p class="warn">For all devices to use the same database, put these values in <code>config.js</code> before publishing. Values saved here only affect this browser.</p>
+      <div class="modal-actions">
+        <button class="btn small primary" data-action="save-cloud">Save connection</button>
+      </div>
+    </div>
+
+    <div class="modal-section">
+      <h4>Relay fallback</h4>
+      <p>No account or API key is needed — messages travel through a public MQTT relay and expire there after 24 hours. Avoid sharing sensitive information.</p>
       <label class="field"><span>Broker</span>
         <select id="cloud-broker" class="field-select">${brokerOptions}</select>
       </label>
-      <div class="modal-actions">
-        <button class="btn small primary" data-action="save-cloud">Switch broker</button>
-      </div>
     </div>
 
     <div class="modal-section">
@@ -1007,8 +1074,15 @@ function handleGlobalClick(event) {
   } else if (action === 'new-chat-submit') {
     startChatWith(el('new-chat-username')?.value || '');
   } else if (action === 'save-cloud') {
-    setCloudConfig({ broker: el('cloud-broker').value });
-    toast('Broker switched. Reloading…', 'success');
+    setCloudConfig({
+      broker: el('cloud-broker').value,
+      supabaseUrl: el('supabase-url').value,
+      supabaseKey: el('supabase-key').value,
+    });
+    cloud.refreshCloudConfig();
+    renderModePill();
+    renderHeader();
+    toast('Connection saved. Reloading…', 'success');
     setTimeout(() => location.reload(), 600);
   } else if (action === 'change-password') {
     changePassword();
@@ -1028,11 +1102,9 @@ function bindEvents() {
   el('auth-form').addEventListener('submit', handleAuthSubmit);
   el('btn-new-chat').addEventListener('click', openNewChatModal);
   el('btn-settings').addEventListener('click', openSettings);
+  el('btn-chat-settings').addEventListener('click', openSettings);
   el('btn-logout').addEventListener('click', logout);
-  el('btn-back').addEventListener('click', () => {
-    state.selectedChatId = null;
-    renderAll();
-  });
+  el('btn-back').addEventListener('click', goBackFromChat);
   el('btn-export').addEventListener('click', exportCurrentChat);
   el('btn-attach').addEventListener('click', () => el('file-input').click());
   el('file-input').addEventListener('change', handleFileSelected);
@@ -1050,9 +1122,17 @@ function bindEvents() {
   el('chat-list').addEventListener('click', (event) => {
     const item = event.target.closest('[data-chat-id]');
     if (!item) return;
-    state.selectedChatId = item.dataset.chatId;
+    selectChat(item.dataset.chatId);
     renderAll();
   });
+  window.addEventListener('popstate', (event) => {
+    const id = event.state?.vanishChat;
+    state.selectedChatId = state.chats.some((chat) => chat.id === id) ? id : null;
+    renderAll();
+  });
+  window.addEventListener('resize', syncViewportHeight);
+  window.visualViewport?.addEventListener('resize', syncViewportHeight);
+  window.visualViewport?.addEventListener('scroll', syncViewportHeight);
   document.addEventListener('click', handleGlobalClick);
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') closeModal();
@@ -1064,6 +1144,7 @@ async function init() {
   await db.openDB();
   await db.purgeExpired();
   bindEvents();
+  syncViewportHeight();
   renderModePill();
   cloud.setOnChange(() => {
     renderModePill();

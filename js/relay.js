@@ -7,9 +7,9 @@
  * Large files are published as base64 chunks and reassembled by the recipient.
  */
 
-import * as db from './db.js?v=2';
-import { fromBase64 } from './crypto.js?v=2';
-import { getCloudConfig } from '../config.js?v=2';
+import * as db from './db.js?v=6';
+import { fromBase64 } from './crypto.js?v=6';
+import { getCloudConfig } from '../config.js?v=6';
 
 const ROOT = 'vanish-chat/v2';
 const KEEPALIVE = 60;
@@ -359,6 +359,15 @@ function publish(topic, payload, { retain = true, expiry = EXPIRY_SECONDS } = {}
 }
 
 /* ---------------- public adapter API ---------------- */
+
+// The relay has no chat table; chats are reconstructed from message rows.
+export async function cloudUpsertChat() {
+  return null;
+}
+
+export async function cloudFetchChats() {
+  return [];
+}
 
 export async function userIdForUsername(username) {
   const normalized = String(username || '').trim().toLowerCase();

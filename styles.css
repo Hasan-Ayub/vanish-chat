@@ -3,6 +3,9 @@
 :root {
   color-scheme: dark;
 
+  --app-height: 100vh;
+  --app-height: 100dvh;
+
   --bg-deep: #060d11;
   --text: #f5f9fa;
   --muted: #9fb0b8;
@@ -28,7 +31,11 @@
 
 * { box-sizing: border-box; }
 
-html, body { height: 100%; }
+html, body {
+  height: 100vh;
+  height: var(--app-height);
+  min-height: 100%;
+}
 
 body {
   margin: 0;
@@ -37,6 +44,8 @@ body {
   font-size: 15px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
   overflow: hidden;
   background:
     radial-gradient(58% 52% at 6% 0%, rgba(0, 168, 132, 0.24), transparent 68%),
@@ -95,8 +104,12 @@ svg { width: 20px; height: 20px; fill: currentColor; }
   min-height: 100%;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: max(24px, env(safe-area-inset-top))
+    max(20px, env(safe-area-inset-right))
+    max(24px, env(safe-area-inset-bottom))
+    max(20px, env(safe-area-inset-left));
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .auth-card {
@@ -281,10 +294,11 @@ svg { width: 20px; height: 20px; fill: currentColor; }
 
 .app-shell {
   height: 100%;
+  min-height: 0;
   display: grid;
-  grid-template-columns: 350px minmax(0, 1fr);
-  gap: 16px;
-  padding: 16px;
+  grid-template-columns: clamp(300px, 28vw, 380px) minmax(0, 1fr);
+  gap: clamp(12px, 1.6vw, 22px);
+  padding: clamp(12px, 1.6vw, 22px);
 }
 
 .sidebar,
@@ -349,6 +363,7 @@ svg { width: 20px; height: 20px; fill: currentColor; }
   transition: background 0.2s, color 0.2s, transform 0.2s var(--ease-ios);
 }
 .icon-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--text); }
+.mobile-head-actions { display: none; gap: 2px; }
 
 .search-wrap { position: relative; margin: 13px 13px 9px; }
 .search-wrap svg {
@@ -439,6 +454,8 @@ svg { width: 20px; height: 20px; fill: currentColor; }
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 22px clamp(14px, 5vw, 56px);
   display: flex;
   flex-direction: column;
@@ -489,7 +506,7 @@ svg { width: 20px; height: 20px; fill: currentColor; }
 .bubble-text { position: relative; white-space: pre-wrap; word-break: break-word; font-size: 14.5px; }
 .bubble-text:empty { display: none; }
 .bubble-media { position: relative; margin: -3px -4px 7px; border-radius: 14px; overflow: hidden; background: rgba(0, 0, 0, 0.35); border: 1px solid var(--glass-border-soft); }
-.bubble-media img, .bubble-media video { display: block; width: 100%; max-height: 320px; object-fit: cover; }
+.bubble-media img, .bubble-media video { display: block; width: 100%; max-height: min(320px, 38vh); object-fit: cover; }
 .media-missing { padding: 18px; color: var(--muted); font-size: 12px; text-align: center; }
 .bubble-foot { position: relative; display: flex; align-items: center; justify-content: flex-end; gap: 9px; margin-top: 4px; }
 .msg-time { color: var(--muted); font-size: 10.5px; }
@@ -543,7 +560,9 @@ svg { width: 20px; height: 20px; fill: currentColor; }
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  margin: 0 14px 14px;
+  margin: 0 max(14px, env(safe-area-inset-right))
+    max(14px, env(safe-area-inset-bottom))
+    max(14px, env(safe-area-inset-left));
   padding: 9px 10px;
   border-radius: 24px;
   background: var(--glass-bg-strong);
@@ -631,14 +650,19 @@ svg { width: 20px; height: 20px; fill: currentColor; }
   background: rgba(3, 8, 11, 0.55);
   display: grid;
   place-items: center;
-  padding: 20px;
+  padding: max(20px, env(safe-area-inset-top))
+    max(20px, env(safe-area-inset-right))
+    max(20px, env(safe-area-inset-bottom))
+    max(20px, env(safe-area-inset-left));
   backdrop-filter: blur(14px) saturate(140%);
   -webkit-backdrop-filter: blur(14px) saturate(140%);
 }
 .modal {
   width: min(100%, 490px);
-  max-height: 88vh;
+  max-height: min(88vh, calc(var(--app-height) - 40px));
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 22px;
   border-radius: var(--radius-xl);
   background: var(--glass-bg-strong);
@@ -662,7 +686,7 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 5
 #toast-root {
   position: fixed;
   z-index: 100;
-  bottom: 26px;
+  bottom: calc(26px + env(safe-area-inset-bottom));
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -693,20 +717,122 @@ code { background: rgba(255, 255, 255, 0.08); padding: 1px 5px; border-radius: 5
 
 /* ---------------- RESPONSIVE ---------------- */
 
+/* Mid-size laptops and tablets in landscape keep both panes, tighter. */
+@media (min-width: 801px) and (max-width: 1050px) {
+  .app-shell { grid-template-columns: 300px minmax(0, 1fr); }
+  .messages { padding-inline: 18px; }
+  .bubble { max-width: 78%; }
+}
+
+/* Phones and tablets in portrait use one pane at a time. */
 @media (max-width: 800px) {
   .app-shell { grid-template-columns: 1fr; gap: 0; padding: 0; }
-  .sidebar, .chat-panel { border-radius: 0; border: 0; box-shadow: none; }
+  .sidebar, .chat-panel {
+    border-radius: 0;
+    border: 0;
+    box-shadow: none;
+    min-height: 0;
+    padding-top: env(safe-area-inset-top);
+  }
   .sidebar { display: flex; }
   .chat-panel { display: none; }
   .app-shell.chat-open .sidebar { display: none; }
   .app-shell.chat-open .chat-panel { display: flex; }
+
   .back { display: grid; }
-  .bubble { max-width: 85%; }
-  .auth-card { border-radius: 30px; }
+  .mobile-head-actions { display: flex; }
+  .icon-btn { width: 40px; height: 40px; }
+  .sidebar-head, .chat-head { gap: 8px; padding: 11px 12px; }
+
+  /* 16px prevents iOS from zooming when an input is focused. */
+  .field input, .field-select, .search-wrap input, .composer textarea { font-size: 16px; }
+  .search-wrap { margin: 11px 12px 8px; }
+  .new-chat { min-height: 44px; margin: 0 12px 10px; }
+  .chat-item { min-height: 62px; padding: 12px; }
+  .chat-list { padding: 0 8px calc(10px + env(safe-area-inset-bottom)); }
+  .sidebar-foot { margin: 0 12px calc(10px + env(safe-area-inset-bottom)); }
+
+  .peer-name { font-size: 15px; }
+  .peer-sub { font-size: 10.5px; }
+  .messages {
+    padding: 14px max(14px, env(safe-area-inset-right)) 18px max(14px, env(safe-area-inset-left));
+    gap: 9px;
+  }
+  .bubble { max-width: 86%; border-radius: 18px 18px 18px 7px; }
+  .msg-row.out .bubble { border-radius: 18px 18px 7px 18px; }
+  .bubble-media img, .bubble-media video { max-height: min(260px, 34vh); object-fit: contain; }
+
+  .composer {
+    gap: 6px;
+    margin: 0 max(10px, env(safe-area-inset-right))
+      calc(10px + env(safe-area-inset-bottom))
+      max(10px, env(safe-area-inset-left));
+    padding: 8px;
+    border-radius: 22px;
+  }
+  .composer textarea { max-height: 96px; padding: 8px 6px; }
+  .send-btn { width: 42px; height: 42px; }
+
+  .auth-card { border-radius: 28px; padding: 50px 22px 24px; }
+  .modal-backdrop {
+    padding: max(12px, env(safe-area-inset-top))
+      max(12px, env(safe-area-inset-right))
+      calc(12px + env(safe-area-inset-bottom))
+      max(12px, env(safe-area-inset-left));
+  }
+  .modal { max-height: calc(var(--app-height) - 24px); padding: 18px; border-radius: 24px; }
+  #toast-root { bottom: calc(16px + env(safe-area-inset-bottom)); }
+}
+
+@media (max-width: 420px) {
+  .brand h1 { font-size: 29px; }
+  .brand-mark { width: 56px; height: 56px; border-radius: 19px; }
+  .brand-mark svg { width: 31px; height: 31px; }
+  .auth-card { padding: 46px 18px 20px; }
+  .me-name { font-size: 15px; }
+  .me-status { font-size: 10.5px; }
+  .chat-head { gap: 6px; }
+  .chat-head .avatar { width: 34px; height: 34px; font-size: 12px; }
+  .peer-name { font-size: 14px; }
+  .peer-sub { display: none; }
+  .bubble { max-width: 90%; }
+  .bubble-text { font-size: 14px; }
+  .empty-state { padding: 24px; }
+  .empty-icon { width: 66px; height: 66px; }
+  .empty-state h2 { font-size: 21px; }
 }
 
 @media (min-width: 801px) {
   .app-shell:not(.chat-open) .chat-panel { display: flex; }
+}
+
+/* Short viewports (landscape phones, small windows) stay usable. */
+@media (max-height: 560px) {
+  .auth-card { padding-top: 40px; }
+  .auth-card::before { top: 8px; height: 22px; }
+  .auth-card::after { top: 16px; }
+  .brand { margin-bottom: 12px; }
+  .brand-mark { width: 48px; height: 48px; margin-bottom: 8px; }
+  .brand-mark svg { width: 27px; height: 27px; }
+  .brand h1 { font-size: 26px; }
+  .brand p { font-size: 12px; }
+  .tabs { margin-bottom: 12px; }
+  .field { margin-bottom: 9px; }
+  .field input { padding: 10px 12px; }
+  .auth-note { margin-top: 12px; padding-top: 10px; }
+  .messages { padding-top: 10px; padding-bottom: 10px; }
+  .bubble-media img, .bubble-media video { max-height: 180px; }
+}
+
+/* Large desktops get a calmer reading width. */
+@media (min-width: 1400px) {
+  .app-shell {
+    max-width: 1600px;
+    margin: 0 auto;
+    grid-template-columns: 390px minmax(0, 1fr);
+  }
+  .messages { padding-inline: clamp(40px, 8vw, 120px); }
+  .bubble { max-width: min(66%, 640px); }
 }
 
 @media (prefers-reduced-motion: reduce) {

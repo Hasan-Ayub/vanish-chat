@@ -1,16 +1,39 @@
 /**
- * Optional Supabase adapter. Everything is plain fetch so the site stays a
- * zero-build static app on GitHub Pages. When no config is present the app
- * simply runs in local-only mode and none of these calls are made.
+ * Supabase adapter: accounts, chats, messages and media all live on the server.
+ *
+ * The site stays zero-build; every call is plain fetch. RLS policies in
+ * supabase/schema.sql keep reads/writes scoped to the signed-in user id, which
+ * the app sends as x-vanish-user on each request.
+ *
+ * Large files are stored as numbered objects in the public `media` bucket and
+ * reassembled on the recipient's device, so the relay's 500 MB behaviour is
+ * preserved while the bytes themselves live on the server.
  */
 
-import { getCloudConfig } from '../config.js';
+import * as db from './db.js?v=6';
+import { uuid } from './crypto.js?v=6';
+import { getCloudConfig } from '../config.js?v=6';
+
+const CHUNK_SIZE = 1024 * 1024;
 
 let config = getCloudConfig();
 let currentUserId = '';
+let status = config.supabaseUrl && config.supabaseKey ? 'connecting' : 'offline';
+const listeners = new Set();
+
+function notify() {
+  for (const listener of listeners) listener();
+}
+
+function setStatus(next) {
+  if (status === next) return;
+  status = next;
+  notify();
+}
 
 export function refreshCloudConfig() {
   config = getCloudConfig();
+  setStatus(cloudEnabled() ? 'connected' : 'offline');
 }
 
 export function setCloudUser(userId) {
@@ -18,76 +41,144 @@ export function setCloudUser(userId) {
 }
 
 export function cloudEnabled() {
-  return Boolean(config.url && config.anonKey);
+  return Boolean(config.supabaseUrl && config.supabaseKey);
 }
 
-function headers(extra = {}) {
-  return {
-    apikey: config.anonKey,
-    Authorization: `Bearer ${config.anonKey}`,
-    'x-vanish-user': currentUserId,
-    ...extra,
-  };
+export function getStatus() {
+  return cloudEnabled() ? status : 'offline';
+}
+
+export function backendName() {
+  return 'database';
+}
+
+export function setOnChange(listener) {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
 }
 
 async function request(path, options = {}) {
-  if (!cloudEnabled()) throw new Error('Cloud is not configured');
-  const response = await fetch(`${config.url}${path}`, {
-    ...options,
-    headers: headers(options.headers || {}),
-  });
+  if (!cloudEnabled()) throw new Error('Database is not configured');
+
+  let response;
+  try {
+    response = await fetch(`${config.supabaseUrl}${path}`, {
+      ...options,
+      headers: {
+        apikey: config.supabaseKey,
+        Authorization: `Bearer ${config.supabaseKey}`,
+        'x-vanish-user': currentUserId,
+        ...(options.headers || {}),
+      },
+    });
+  } catch (error) {
+    setStatus('offline');
+    throw new Error(`Could not reach the database: ${error.message}`);
+  }
+
   const text = await response.text();
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+
   if (!response.ok) {
+    setStatus('offline');
     const message = (data && (data.message || data.error || data.hint)) || `Request failed (${response.status})`;
     throw new Error(message);
   }
+
+  setStatus('connected');
   return data;
 }
 
-export async function cloudCreateProfile({ id, username, salt, hash }) {
-  const rows = await request('/rest/v1/profiles', {
+const jsonHeaders = { 'Content-Type': 'application/json' };
+const first = (rows) => (Array.isArray(rows) ? rows[0] : rows);
+
+/* ---------------- accounts ---------------- */
+
+export async function cloudCreateProfile({ username, salt, hash }) {
+  const id = uuid();
+  const row = first(await request('/rest/v1/profiles', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' },
+    headers: { ...jsonHeaders, Prefer: 'return=representation' },
     body: JSON.stringify({ id, username, salt, password_hash: hash }),
-  });
-  return Array.isArray(rows) ? rows[0] : rows;
+  }));
+  return row || { id, username };
 }
 
 export async function cloudGetProfile(username) {
   const rows = await request(
     `/rest/v1/profiles?username=eq.${encodeURIComponent(username)}&select=*&limit=1`
   );
-  return Array.isArray(rows) ? rows[0] : null;
+  return first(rows) || { username, salt: null, password_hash: null };
 }
 
 export async function cloudGetProfileById(id) {
-  const rows = await request(`/rest/v1/profiles?id=eq.${encodeURIComponent(id)}&select=*&limit=1`);
-  return Array.isArray(rows) ? rows[0] : null;
+  const rows = await request(
+    `/rest/v1/profiles?id=eq.${encodeURIComponent(id)}&select=*&limit=1`
+  );
+  return first(rows) || null;
 }
 
 export async function cloudUpdateProfileHash(id, salt, hash) {
   return request(`/rest/v1/profiles?id=eq.${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: jsonHeaders,
     body: JSON.stringify({ salt, password_hash: hash }),
   });
 }
 
-export async function cloudFetchMessages(userId, since) {
-  const filter = `or=(sender_id.eq.${userId},recipient_id.eq.${userId})`;
-  let path = `/rest/v1/messages?${encodeURIComponent(filter).replace('%28', '(').replace('%29', ')')}`;
-  path += '&select=*&order=created_at.asc&limit=500';
-  if (since) path += `&created_at=gt.${encodeURIComponent(since)}`;
-  const rows = await request(path);
+/* ---------------- chats ---------------- */
+
+export async function cloudUpsertChat(chat) {
+  if (!chat || !Array.isArray(chat.participants) || chat.participants.length !== 2) return null;
+  const [user_1, user_2] = chat.participants;
+  const row = first(await request('/rest/v1/chats', {
+    method: 'POST',
+    headers: { ...jsonHeaders, Prefer: 'resolution=merge-duplicates,return=representation' },
+    body: JSON.stringify({
+      id: chat.id,
+      user_1,
+      user_2,
+      created_at: new Date(chat.createdAt || Date.now()).toISOString(),
+      updated_at: new Date(chat.updatedAt || Date.now()).toISOString(),
+    }),
+  }));
+  return row || null;
+}
+
+export async function cloudFetchChats() {
+  if (!currentUserId) return [];
+  const filter = `or=(user_1.eq.${encodeURIComponent(currentUserId)},user_2.eq.${encodeURIComponent(currentUserId)})`;
+  const rows = await request(`/rest/v1/chats?${filter}&select=*&limit=1000`);
+  return (Array.isArray(rows) ? rows : []).map((row) => ({
+    id: row.id,
+    participants: [row.user_1, row.user_2],
+    peerName: '',
+    createdAt: Date.parse(row.created_at) || Date.now(),
+    updatedAt: Date.parse(row.updated_at) || Date.now(),
+  }));
+}
+
+/* ---------------- messages ---------------- */
+
+export async function cloudFetchMessages() {
+  if (!currentUserId) return [];
+  const filter = `or=(sender_id.eq.${encodeURIComponent(currentUserId)},recipient_id.eq.${encodeURIComponent(currentUserId)})`;
+  const rows = await request(`/rest/v1/messages?${filter}&select=*&order=created_at.asc&limit=1000`);
   return Array.isArray(rows) ? rows : [];
 }
 
 export async function cloudInsertMessage(message) {
-  const rows = await request('/rest/v1/messages', {
+  await cloudUpsertChat({
+    id: message.chatId,
+    participants: [message.senderId, message.recipientId],
+    createdAt: message.createdAt,
+    updatedAt: message.createdAt,
+  });
+
+  const row = first(await request('/rest/v1/messages', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' },
+    headers: { ...jsonHeaders, Prefer: 'return=representation' },
     body: JSON.stringify({
       id: message.id,
       chat_id: message.chatId,
@@ -95,41 +186,106 @@ export async function cloudInsertMessage(message) {
       recipient_id: message.recipientId,
       kind: message.type,
       body: message.text || null,
+      media_id: message.mediaId || null,
       media_path: message.mediaPath || null,
+      media_chunks: message.mediaChunks || 0,
       media_name: message.mediaName || null,
       media_mime: message.mediaMime || null,
       media_size: message.mediaSize || null,
       created_at: new Date(message.createdAt).toISOString(),
       expires_at: new Date(message.expiresAt).toISOString(),
     }),
-  });
-  return Array.isArray(rows) ? rows[0] : rows;
+  }));
+  return row || message;
 }
 
-export async function cloudDeleteMessage(id) {
-  return request(`/rest/v1/messages?id=eq.${encodeURIComponent(id)}`, { method: 'DELETE' });
-}
-
-export async function cloudUploadMedia(id, blob, name, mime) {
-  const path = `${currentUserId}/${id}`;
-  await request(`/storage/v1/object/media/${path}`, {
-    method: 'POST',
-    headers: { 'Content-Type': mime || blob.type || 'application/octet-stream', 'x-upsert': 'true' },
-    body: blob,
-  });
-  return path;
-}
-
-export async function cloudDeleteMedia(path) {
-  if (!path) return;
+export async function cloudDeleteMessage(message) {
+  if (!message || !message.id) return;
+  if (message.mediaPath && message.mediaPath.startsWith('supabase:')) {
+    await cloudDeleteMedia(message);
+  }
   try {
-    await request(`/storage/v1/object/media/${path}`, { method: 'DELETE' });
+    await request(`/rest/v1/messages?id=eq.${encodeURIComponent(message.id)}`, { method: 'DELETE' });
   } catch {
-    // Object may already be gone; ignore.
+    // Already removed by the 24h cleanup or another device.
+  }
+}
+
+/* ---------------- media ---------------- */
+
+function mediaParts(message) {
+  const parts = String(message?.mediaPath || '').split(':');
+  if (parts[0] !== 'supabase' || parts.length < 4) return null;
+  const total = Number(parts[parts.length - 1]);
+  return { owner: parts[1], id: parts[2], total: Number.isFinite(total) && total > 0 ? total : 0 };
+}
+
+export async function cloudUploadMedia(id, blob, name, mime, recipientId, onProgress) {
+  if (!cloudEnabled()) throw new Error('Database is not configured');
+  const owner = currentUserId || recipientId;
+  if (!owner) throw new Error('Sign in before uploading media.');
+
+  const total = Math.max(1, Math.ceil(blob.size / CHUNK_SIZE));
+  for (let part = 0; part < total; part++) {
+    const slice = blob.slice(part * CHUNK_SIZE, (part + 1) * CHUNK_SIZE);
+    await request(`/storage/v1/object/media/${owner}/${id}/${part}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': mime || blob.type || 'application/octet-stream',
+        'x-upsert': 'true',
+      },
+      body: slice,
+    });
+    if (onProgress) onProgress(part + 1, total);
+  }
+  return `supabase:${owner}:${id}:${total}`;
+}
+
+export async function cloudFetchMedia(message) {
+  if (!cloudEnabled()) return false;
+  const info = mediaParts(message);
+  if (!info || !info.total) return false;
+
+  const chunks = [];
+  for (let part = 0; part < info.total; part++) {
+    const url = `${config.supabaseUrl}/storage/v1/object/public/media/${info.owner}/${info.id}/${part}`;
+    const response = await fetch(url);
+    if (!response.ok) return false;
+    chunks.push(await response.blob());
+  }
+
+  const blob = new Blob(chunks, { type: message.mediaMime || 'application/octet-stream' });
+  await db.put('media', {
+    id: message.mediaId,
+    blob,
+    name: message.mediaName || 'media',
+    mime: message.mediaMime || blob.type,
+    size: blob.size,
+    createdAt: message.createdAt,
+    expiresAt: message.expiresAt,
+  });
+  notify();
+  return true;
+}
+
+export async function cloudDeleteMedia(message) {
+  const info = mediaParts(message);
+  if (!info || !info.total || !cloudEnabled()) return;
+  for (let part = 0; part < info.total; part++) {
+    try {
+      await request(`/storage/v1/object/media/${info.owner}/${info.id}/${part}`, { method: 'DELETE' });
+    } catch {
+      // Object may already be gone; ignore.
+    }
   }
 }
 
 export function cloudMediaUrl(path) {
   if (!cloudEnabled() || !path) return '';
-  return `${config.url}/storage/v1/object/public/media/${path}`;
+  return `${config.supabaseUrl}/storage/v1/object/public/media/${path}`;
+}
+
+export async function userIdForUsername(username) {
+  const profile = await cloudGetProfile(username);
+  return profile.id || '';
 }
