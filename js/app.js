@@ -1,7 +1,7 @@
-import * as db from './db.js?v=14';
-import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=14';
-import * as cloud from './backend.js?v=14';
-import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=14';
+import * as db from './db.js?v=15';
+import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=15';
+import * as cloud from './backend.js?v=15';
+import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=15';
 
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_MEDIA_BYTES = 500 * 1024 * 1024;
@@ -49,14 +49,16 @@ function goBackFromChat() {
 }
 
 function syncViewportHeight() {
+  // Keep --app-height in sync with the *visible* viewport. On older iOS the
+  // CSS 100vh value includes the hidden toolbars, which pushes the composer
+  // and the bottom of modals off screen. visualViewport excludes them.
   const viewport = window.visualViewport;
-  if (!viewport) return;
-  const keyboardOpen = viewport.height < window.innerHeight - 120;
-  document.documentElement.style.setProperty(
-    '--app-height',
-    keyboardOpen ? `${Math.round(viewport.height)}px` : ''
-  );
-  if (keyboardOpen) requestAnimationFrame(scrollToBottom);
+  const measured = viewport && viewport.height ? viewport.height : window.innerHeight;
+  const height = Math.max(320, Math.round(measured));
+  document.documentElement.style.setProperty('--app-height', `${height}px`);
+  if (viewport && viewport.height < window.innerHeight - 120) {
+    requestAnimationFrame(scrollToBottom);
+  }
 }
 
 function escapeHtml(value) {
@@ -1427,6 +1429,7 @@ function bindEvents() {
     renderAll();
   });
   window.addEventListener('resize', syncViewportHeight);
+  window.addEventListener('orientationchange', syncViewportHeight);
   if (window.visualViewport) {
     window.visualViewport.addEventListener('resize', syncViewportHeight);
     window.visualViewport.addEventListener('scroll', syncViewportHeight);

@@ -12,7 +12,7 @@ A messaging web app where every message, image and video is **permanently delete
 - On phones, choose saved photos/videos or open the camera from the attach sheet
 - Tap a received photo/video to open it in the app's own viewer, with next/previous and download buttons
 - Download individual files or export a whole chat before expiry
-- iPhone-inspired liquid glass UI for phones, tablets and desktops
+- iPhone-inspired liquid glass UI for phones, tablets and desktops, with fallbacks for older iOS Safari (iPhone 6)
 - IndexedDB is used only as a local cache; the server is the source of truth when configured
 
 ## Live site

@@ -7,7 +7,16 @@
   <meta name="description" content="Vanish Chat — private messaging where every message disappears after 24 hours.">
   <title>Vanish Chat</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2300a884'/%3E%3Cpath d='M33 8 18 36h12l-4 20 20-30H34z' fill='white'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css?v=14">
+  <link rel="stylesheet" href="./styles.css?v=15">
+  <script>
+    // Older iOS Safari does not support dvh and treats 100vh as the tallest
+    // viewport (with toolbars hidden). Set a real pixel height immediately.
+    (function () {
+      var view = window.visualViewport;
+      var height = (view && view.height) ? view.height : window.innerHeight;
+      document.documentElement.style.setProperty('--app-height', Math.round(height) + 'px');
+    })();
+  </script>
 </head>
 <body>
   <!-- AUTH -->
@@ -198,6 +207,6 @@
       };
     })();
   </script>
-  <script type="module" src="./js/app.js?v=14"></script>
+  <script type="module" src="./js/app.js?v=15"></script>
 </body>
 </html>

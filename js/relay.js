@@ -7,9 +7,9 @@
  * Large files are published as base64 chunks and reassembled by the recipient.
  */
 
-import * as db from './db.js?v=14';
-import { fromBase64 } from './crypto.js?v=14';
-import { getCloudConfig } from '../config.js?v=14';
+import * as db from './db.js?v=15';
+import { fromBase64 } from './crypto.js?v=15';
+import { getCloudConfig } from '../config.js?v=15';
 
 const ROOT = 'vanish-chat/v2';
 const KEEPALIVE = 60;
