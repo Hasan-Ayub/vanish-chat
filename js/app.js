@@ -1,7 +1,7 @@
-import * as db from './db.js?v=8';
-import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=8';
-import * as cloud from './backend.js?v=8';
-import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=8';
+import * as db from './db.js?v=9';
+import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=9';
+import * as cloud from './backend.js?v=9';
+import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=9';
 
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_MEDIA_BYTES = 500 * 1024 * 1024;
@@ -290,8 +290,11 @@ async function handleAuthSubmit(event) {
 
 function setAuthTab(tab) {
   state.authTab = tab;
+  window.__vanishAuthTab = tab;
   document.querySelectorAll('[data-auth-tab]').forEach((button) => {
-    button.classList.toggle('active', button.dataset.authTab === tab);
+    const selected = button.dataset.authTab === tab;
+    button.classList.toggle('active', selected);
+    button.setAttribute('aria-selected', String(selected));
   });
   el('confirm-field').classList.toggle('hidden', tab !== 'register');
   el('auth-submit').textContent = tab === 'register' ? 'Create account' : 'Sign in';
@@ -1096,9 +1099,11 @@ function handleGlobalClick(event) {
 }
 
 function bindEvents() {
-  document.querySelectorAll('[data-auth-tab]').forEach((button) => {
-    button.addEventListener('click', () => setAuthTab(button.dataset.authTab));
-  });
+  // The inline script in index.html owns the tab click so it works even if
+  // this module (or IndexedDB) is slow or fails. It reports back through here.
+  window.vanishChatAuthTabChanged = (tab) => {
+    state.authTab = tab;
+  };
   el('auth-form').addEventListener('submit', handleAuthSubmit);
   el('btn-new-chat').addEventListener('click', openNewChatModal);
   el('btn-settings').addEventListener('click', openSettings);
@@ -1143,9 +1148,12 @@ function bindEvents() {
 
 async function init() {
   cloud.refreshCloudConfig();
-  await db.openDB();
-  await db.purgeExpired();
+
+  // Bind UI handlers first. If IndexedDB is blocked (iOS private browsing,
+  // low storage, failed upgrade), buttons must still respond so the user can
+  // switch tabs and see a clear error instead of a frozen screen.
   bindEvents();
+  setAuthTab(window.__vanishAuthTab === 'register' ? 'register' : 'login');
   syncViewportHeight();
   renderModePill();
   cloud.setOnChange(() => {
@@ -1153,9 +1161,17 @@ async function init() {
     if (state.currentUser) renderHeader();
   });
 
-  const restored = await restoreSession();
-  if (restored) await enterApp();
-  else el('auth-screen').classList.remove('hidden');
+  try {
+    await db.openDB();
+    await db.purgeExpired();
+    const restored = await restoreSession();
+    if (restored) await enterApp();
+    else el('auth-screen').classList.remove('hidden');
+  } catch (error) {
+    console.error(error);
+    toast(`Local storage unavailable: ${error.message}`, 'error');
+    el('auth-screen').classList.remove('hidden');
+  }
 
   setInterval(updateCountdowns, 1000);
   setInterval(purgeExpiredNow, 60000);

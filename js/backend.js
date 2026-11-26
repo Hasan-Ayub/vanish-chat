@@ -6,9 +6,9 @@
  * existing public demo keeps working.
  */
 
-import * as relay from './relay.js?v=8';
-import * as supabase from './cloud.js?v=8';
-import { isCloudConfigured } from '../config.js?v=8';
+import * as relay from './relay.js?v=9';
+import * as supabase from './cloud.js?v=9';
+import { isCloudConfigured } from '../config.js?v=9';
 
 const useDatabase = () => isCloudConfigured();
 const active = () => (useDatabase() ? supabase : relay);

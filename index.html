@@ -7,7 +7,7 @@
   <meta name="description" content="Vanish Chat — private messaging where every message disappears after 24 hours.">
   <title>Vanish Chat</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2300a884'/%3E%3Cpath d='M33 8 18 36h12l-4 20 20-30H34z' fill='white'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css?v=8">
+  <link rel="stylesheet" href="./styles.css?v=9">
 </head>
 <body>
   <!-- AUTH -->
@@ -24,8 +24,8 @@
       <div id="mode-pill" class="mode-pill">Local demo mode</div>
 
       <div class="tabs" role="tablist">
-        <button class="tab active" data-auth-tab="login" role="tab">Sign in</button>
-        <button class="tab" data-auth-tab="register" role="tab">Create account</button>
+        <button class="tab active" type="button" data-auth-tab="login" role="tab" aria-selected="true">Sign in</button>
+        <button class="tab" type="button" data-auth-tab="register" role="tab" aria-selected="false">Create account</button>
       </div>
 
       <form id="auth-form" novalidate>
@@ -143,6 +143,35 @@
   <div id="modal-root"></div>
   <div id="toast-root" aria-live="polite"></div>
 
-  <script type="module" src="./js/app.js?v=8"></script>
+  <!-- Auth tabs are wired without waiting for the app module or IndexedDB. -->
+  <script>
+    (function () {
+      function setAuthTab(tab) {
+        tab = tab === 'register' ? 'register' : 'login';
+        window.__vanishAuthTab = tab;
+        document.querySelectorAll('[data-auth-tab]').forEach(function (button) {
+          var selected = button.getAttribute('data-auth-tab') === tab;
+          button.classList.toggle('active', selected);
+          button.setAttribute('aria-selected', selected ? 'true' : 'false');
+        });
+        var confirmField = document.getElementById('confirm-field');
+        if (confirmField) confirmField.classList.toggle('hidden', tab !== 'register');
+        var submit = document.getElementById('auth-submit');
+        if (submit) submit.textContent = tab === 'register' ? 'Create account' : 'Sign in';
+        if (typeof window.vanishChatAuthTabChanged === 'function') {
+          window.vanishChatAuthTabChanged(tab);
+        }
+      }
+
+      window.vanishChatSetAuthTab = setAuthTab;
+      document.addEventListener('click', function (event) {
+        var target = event.target;
+        var button = target && target.closest ? target.closest('[data-auth-tab]') : null;
+        if (button) setAuthTab(button.getAttribute('data-auth-tab'));
+      });
+      setAuthTab(window.__vanishAuthTab || 'login');
+    })();
+  </script>
+  <script type="module" src="./js/app.js?v=9"></script>
 </body>
 </html>
