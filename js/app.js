@@ -1,7 +1,7 @@
-import * as db from './db.js';
-import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js';
-import * as cloud from './relay.js';
-import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js';
+import * as db from './db.js?v=2';
+import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=2';
+import * as cloud from './relay.js?v=2';
+import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=2';
 
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_MEDIA_BYTES = 500 * 1024 * 1024;
