@@ -1,7 +1,7 @@
-import * as db from './db.js?v=7';
-import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=7';
-import * as cloud from './backend.js?v=7';
-import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=7';
+import * as db from './db.js?v=8';
+import { uuid, hashPassword, verifyPassword, randomToken } from './crypto.js?v=8';
+import * as cloud from './backend.js?v=8';
+import { BROKERS, getCloudConfig, setCloudConfig, clearCloudConfig } from '../config.js?v=8';
 
 const RETENTION_MS = 24 * 60 * 60 * 1000;
 const MAX_MEDIA_BYTES = 500 * 1024 * 1024;
@@ -1110,10 +1110,12 @@ function bindEvents() {
   el('file-input').addEventListener('change', handleFileSelected);
   el('composer').addEventListener('submit', handleSend);
   el('message-input').addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
-      event.preventDefault();
-      el('composer').requestSubmit();
-    }
+    if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+    // On phones/tablets the iOS Return key should add a newline, not send.
+    // The dedicated Send button is the reliable touch target.
+    if (mobileLayout()) return;
+    event.preventDefault();
+    el('composer').requestSubmit();
   });
   el('chat-search').addEventListener('input', (event) => {
     state.search = event.target.value.trim().toLowerCase();

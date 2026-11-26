@@ -7,7 +7,7 @@
   <meta name="description" content="Vanish Chat — private messaging where every message disappears after 24 hours.">
   <title>Vanish Chat</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%2300a884'/%3E%3Cpath d='M33 8 18 36h12l-4 20 20-30H34z' fill='white'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="./styles.css?v=7">
+  <link rel="stylesheet" href="./styles.css?v=8">
 </head>
 <body>
   <!-- AUTH -->
@@ -131,7 +131,7 @@
             <div id="upload-bar" class="upload-bar"></div>
             <span id="upload-label"></span>
           </div>
-          <textarea id="message-input" rows="1" placeholder="Type a message" maxlength="4000"></textarea>
+          <textarea id="message-input" rows="1" placeholder="Type a message" maxlength="4000" enterkeyhint="enter"></textarea>
         </div>
         <button type="submit" id="btn-send" class="send-btn" title="Send" aria-label="Send">
           <svg viewBox="0 0 24 24"><path d="M2 21 23 12 2 3l.01 7L17 12 2.01 14z"/></svg>
@@ -143,6 +143,6 @@
   <div id="modal-root"></div>
   <div id="toast-root" aria-live="polite"></div>
 
-  <script type="module" src="./js/app.js?v=7"></script>
+  <script type="module" src="./js/app.js?v=8"></script>
 </body>
 </html>
